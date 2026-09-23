@@ -45,6 +45,14 @@ class IntentCategory(Enum):
     TECHNICAL_LOGIN = "technical_login"  # 登录认证故障
     TECHNICAL_CRASH = "technical_crash"  # 崩溃/错误码
     HUMAN_HANDOFF = "human_handoff"      # 转人工
+    SERVICE_INCIDENT = "service_incident"      # 服务异常/不可用/错误率升高
+    LATENCY_ISSUE = "latency_issue"            # 延迟升高/超时
+    DATABASE_ISSUE = "database_issue"          # 数据库连接、慢查询、锁等待
+    DEPLOYMENT_ISSUE = "deployment_issue"      # 发布/部署后异常
+    RESOURCE_ISSUE = "resource_issue"          # CPU/内存/磁盘/连接数异常
+    NETWORK_ISSUE = "network_issue"            # 网关、Nginx、DNS、网络抖动
+    RUNBOOK_QUERY = "runbook_query"            # 查询 Runbook/SOP
+    ALERT_TRIAGE = "alert_triage"              # 告警分级与初判
     OTHER      = "other"
 
 
@@ -87,6 +95,14 @@ _TEMPLATES: Dict[IntentCategory, List[str]] = {
     IntentCategory.TECHNICAL_LOGIN: ["登录一直报401", "验证码收不到", "无法登录账号"],
     IntentCategory.TECHNICAL_CRASH: ["应用一直崩溃", "页面报500错误", "系统闪退"],
     IntentCategory.HUMAN_HANDOFF: ["转人工客服", "我要找人工", "请升级处理"],
+    IntentCategory.SERVICE_INCIDENT: ["payment-service 5xx 激增", "服务不可用", "接口大量报错"],
+    IntentCategory.LATENCY_ISSUE: ["接口延迟突然升高", "请求超时", "P95 延迟超过 2 秒"],
+    IntentCategory.DATABASE_ISSUE: ["日志里有 DBConnectionError", "数据库连接池耗尽", "慢查询很多"],
+    IntentCategory.DEPLOYMENT_ISSUE: ["刚发布 v2.3.7 后开始报错", "部署后异常", "需要判断是否回滚"],
+    IntentCategory.RESOURCE_ISSUE: ["CPU 使用率 95%", "内存持续上涨", "磁盘空间不足"],
+    IntentCategory.NETWORK_ISSUE: ["网关 502", "Nginx upstream 超时", "DNS 解析异常"],
+    IntentCategory.RUNBOOK_QUERY: ["查询 payment-service 的故障处理手册", "有没有对应 Runbook", "这个告警 SOP 是什么"],
+    IntentCategory.ALERT_TRIAGE: ["帮我判断这个告警严重程度", "这个告警要不要升级", "先做一下故障初判"],
 }
 
 _SPECIFIC_INTENTS = {
@@ -99,6 +115,14 @@ _SPECIFIC_INTENTS = {
     IntentCategory.TECHNICAL_LOGIN,
     IntentCategory.TECHNICAL_CRASH,
     IntentCategory.HUMAN_HANDOFF,
+    IntentCategory.SERVICE_INCIDENT,
+    IntentCategory.LATENCY_ISSUE,
+    IntentCategory.DATABASE_ISSUE,
+    IntentCategory.DEPLOYMENT_ISSUE,
+    IntentCategory.RESOURCE_ISSUE,
+    IntentCategory.NETWORK_ISSUE,
+    IntentCategory.RUNBOOK_QUERY,
+    IntentCategory.ALERT_TRIAGE,
 }
 
 _GENERIC_INTENTS = {
@@ -109,22 +133,30 @@ _GENERIC_INTENTS = {
     IntentCategory.ESCALATION,
 }
 
-_INTENT_GROUPS: Dict[IntentCategory, IntentCategory] = {
-    IntentCategory.ORDER_STATUS: IntentCategory.QUERY,
-    IntentCategory.LOGISTICS: IntentCategory.QUERY,
-    IntentCategory.REFUND: IntentCategory.BILLING,
-    IntentCategory.INVOICE: IntentCategory.BILLING,
-    IntentCategory.PAYMENT_ISSUE: IntentCategory.BILLING,
-    IntentCategory.ACCOUNT_SECURITY: IntentCategory.ACCOUNT,
-    IntentCategory.TECHNICAL_LOGIN: IntentCategory.TECHNICAL,
-    IntentCategory.TECHNICAL_CRASH: IntentCategory.TECHNICAL,
-    IntentCategory.HUMAN_HANDOFF: IntentCategory.ESCALATION,
+_INTENT_GROUPS: Dict[IntentCategory, str] = {
+    IntentCategory.ORDER_STATUS: "query",
+    IntentCategory.LOGISTICS: "query",
+    IntentCategory.REFUND: "billing",
+    IntentCategory.INVOICE: "billing",
+    IntentCategory.PAYMENT_ISSUE: "billing",
+    IntentCategory.ACCOUNT_SECURITY: "account",
+    IntentCategory.TECHNICAL_LOGIN: "technical",
+    IntentCategory.TECHNICAL_CRASH: "technical",
+    IntentCategory.HUMAN_HANDOFF: "escalation",
+    IntentCategory.SERVICE_INCIDENT: "application",
+    IntentCategory.LATENCY_ISSUE: "application",
+    IntentCategory.DEPLOYMENT_ISSUE: "application",
+    IntentCategory.DATABASE_ISSUE: "database",
+    IntentCategory.RESOURCE_ISSUE: "infrastructure",
+    IntentCategory.NETWORK_ISSUE: "infrastructure",
+    IntentCategory.RUNBOOK_QUERY: "operations",
+    IntentCategory.ALERT_TRIAGE: "operations",
 }
 
 # 紧急关键词
 _URGENCY_KEYWORDS = {
-    UrgencyLevel.CRITICAL: ["紧急", "emergency", "urgent", "asap", "立刻"],
-    UrgencyLevel.HIGH:     ["今天", "马上", "尽快", "hurry", "now"],
+    UrgencyLevel.CRITICAL: ["紧急", "emergency", "urgent", "asap", "立刻", "p0", "p1", "不可用", "宕机"],
+    UrgencyLevel.HIGH:     ["今天", "马上", "尽快", "hurry", "now", "5xx", "大量报错", "激增"],
     UrgencyLevel.MEDIUM:   ["这周", "soon", "快点"],
 }
 
@@ -252,9 +284,9 @@ class IntentRecognizer:
                 for m in history[-3:]
             )
 
-        prompt = f"""你是客服意图分析专家。根据示例判断用户意图，返回 JSON。
+        prompt = f"""你是企业系统故障诊断平台 RootLens 的意图分析专家。根据示例判断用户意图，返回 JSON。
 如果用户问题能匹配细粒度业务意图，请优先返回细粒度意图，而不是宽泛大类。
-例如退款优先返回 refund，发票优先返回 invoice，登录故障优先返回 technical_login。
+例如服务 5xx 激增优先返回 service_incident，发布后异常优先返回 deployment_issue，数据库连接错误优先返回 database_issue。
 
 示例:
 {examples}
@@ -309,6 +341,14 @@ class IntentRecognizer:
         msg = message.lower()
         specific_patterns = {
             IntentCategory.HUMAN_HANDOFF: ["转人工", "人工客服", "找人工"],
+            IntentCategory.SERVICE_INCIDENT: ["5xx", "不可用", "宕机", "故障", "服务异常", "错误率", "激增", "incident"],
+            IntentCategory.LATENCY_ISSUE: ["延迟", "超时", "timeout", "p95", "p99", "latency", "慢"],
+            IntentCategory.DATABASE_ISSUE: ["dbconnectionerror", "database", "数据库", "连接池", "慢查询", "锁等待", "deadlock", "sql"],
+            IntentCategory.DEPLOYMENT_ISSUE: ["刚发布", "发布", "部署", "上线", "回滚", "rollback", "deploy", "release"],
+            IntentCategory.RESOURCE_ISSUE: ["cpu", "内存", "memory", "磁盘", "disk", "oom", "连接数"],
+            IntentCategory.NETWORK_ISSUE: ["nginx", "网关", "gateway", "dns", "502", "503", "upstream"],
+            IntentCategory.RUNBOOK_QUERY: ["runbook", "sop", "处理手册", "排障手册"],
+            IntentCategory.ALERT_TRIAGE: ["告警", "严重程度", "分级", "triage"],
             IntentCategory.ORDER_STATUS: ["订单状态", "发货了吗", "处理到哪", "order status"],
             IntentCategory.LOGISTICS: ["物流", "快递", "配送", "运单", "delivery", "shipping"],
             IntentCategory.REFUND: ["退款", "退货", "refund", "return"],
@@ -383,7 +423,11 @@ class IntentRecognizer:
             "product": [],
             "date": self._unique(re.findall(r"(今天|明天|昨天|本周|这周|下周|\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)", message)),
             "amount": self._unique(re.findall(r"((?:¥|￥)\s*\d+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?\s*(?:元|块|rmb|cny|usd|美元))", message, re.I)),
-            "error_code": self._unique(re.findall(r"\b([45]\d{2}|[A-Z][A-Z0-9_-]{2,16})\b", message)),
+            "service_name": self._unique(re.findall(r"\b([a-z][a-z0-9-]{2,40}-(?:service|api|worker|job|gateway))\b", message, re.I)),
+            "start_time": self._unique(re.findall(r"(?:从|自|since)?\s*(\d{1,2}:\d{2})\s*(?:开始|起)?", message)),
+            "version": self._unique(re.findall(r"\b(v\d+(?:\.\d+){1,3})\b", message, re.I)),
+            "status_code": self._unique(re.findall(r"\b([45]\d{2}|[45]xx)\b", message, re.I)),
+            "error_code": self._unique(re.findall(r"\b([45]\d{2}|[A-Z][A-Za-z0-9_]*(?:Error|Exception)|[A-Z][A-Z0-9_-]{2,16})\b", message)),
         }
 
     # ── 辅助 ──────────────────────────────────────────────────────────────────
@@ -485,7 +529,7 @@ class IntentRecognizer:
 
     @staticmethod
     def _intent_group(intent: IntentCategory) -> str:
-        return _INTENT_GROUPS.get(intent, intent).value#dict.get(key, default)如果字典里有 key，就返回 dict[key],如果没有 key，就返回 default
+        return _INTENT_GROUPS.get(intent, intent.value)#dict.get(key, default)如果字典里有 key，就返回 dict[key],如果没有 key，就返回 default
 #先用 intent 去 _INTENT_GROUPS 字典里查如果查得到，返回映射后的大类 IntentCategory,如果查不到，就返回 intent 自己
     @staticmethod
     def _clean_text(value: Any) -> str:
@@ -505,3 +549,5 @@ class IntentRecognizer:
             "misses": self.cache_misses,
             "hit_rate": self.cache_hits / total if total else 0.0,
         }
+
+

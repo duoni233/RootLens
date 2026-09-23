@@ -36,10 +36,11 @@ logger = logging.getLogger(__name__)
 
 #定义一个枚举项 GENERAL，它的值是 "general"
 class AgentType(Enum):
-    GENERAL   = "general"    # 通用客服
-    TECHNICAL = "technical"  # 技术支持
-    BILLING   = "billing"    # 账单/退款
-    ESCALATION = "escalation" # 人工升级（占位）
+    GENERAL   = "general_ops"     # 通用运维/告警分诊
+    APPLICATION = "application"   # 应用服务诊断
+    DATABASE = "database"         # 数据库诊断
+    INFRASTRUCTURE = "infrastructure" # 基础设施诊断
+    ESCALATION = "escalation"     # 人工升级（占位）
 
 
 @dataclass
@@ -200,27 +201,35 @@ class BaseAgent:
         return any(kw in content for kw in keywords)
 
 
-class GeneralAgent(BaseAgent):
+class GeneralOpsAgent(BaseAgent):
     agent_type    = AgentType.GENERAL
     system_prompt = (
-        "你是 EchoMind 智能客服。友好、简洁地回答用户问题。"
-        "如果问题超出你的能力范围，明确说明并建议转接专业客服。"
+        "你是 RootLens 通用运维分诊 Agent。负责澄清问题、判断告警严重程度、"
+        "汇总跨领域诊断结论，并在证据不足时指出还需要哪些日志、指标或发布信息。"
     )
 
 
-class TechnicalAgent(BaseAgent):
-    agent_type    = AgentType.TECHNICAL
+class ApplicationAgent(BaseAgent):
+    agent_type    = AgentType.APPLICATION
     system_prompt = (
-        "你是技术支持专家。专注于：故障排查、错误诊断、系统配置。"
-        "提供清晰的步骤化解决方案。遇到需要后台操作的问题，说明需要升级处理。"
+        "你是 RootLens 应用服务诊断 Agent。专注于：服务不可用、5xx 激增、接口超时、"
+        "发布后异常、错误日志和版本回滚判断。回答时要给出证据、可能原因和下一步排查动作。"
     )
 
 
-class BillingAgent(BaseAgent):
-    agent_type    = AgentType.BILLING
+class DatabaseAgent(BaseAgent):
+    agent_type    = AgentType.DATABASE
     system_prompt = (
-        "你是账单服务专家。专注于：账单查询、退款申请、发票问题、订阅管理。"
-        "对财务问题保持准确和专业。涉及实际退款操作时，说明需要人工审核。"
+        "你是 RootLens 数据库诊断 Agent。专注于：数据库连接错误、连接池耗尽、慢查询、"
+        "锁等待和事务异常。不要直接承诺执行高风险操作，只给出诊断依据和建议。"
+    )
+
+
+class InfrastructureAgent(BaseAgent):
+    agent_type    = AgentType.INFRASTRUCTURE
+    system_prompt = (
+        "你是 RootLens 基础设施诊断 Agent。专注于：CPU、内存、磁盘、网络、Nginx、网关、DNS、Redis 等问题。"
+        "优先结合指标和基础设施信号定位故障范围。"
     )
 
 
@@ -238,15 +247,23 @@ class AgentOrchestrator:
 
     # 意图 → Agent 类型的静态映射（路由表）
     _INTENT_ROUTING: Dict[IntentCategory, AgentType] = {
-        IntentCategory.TECHNICAL:  AgentType.TECHNICAL,
-        IntentCategory.TECHNICAL_LOGIN: AgentType.TECHNICAL,
-        IntentCategory.TECHNICAL_CRASH: AgentType.TECHNICAL,
-        IntentCategory.BILLING:    AgentType.BILLING,
-        IntentCategory.REFUND:     AgentType.BILLING,
-        IntentCategory.INVOICE:    AgentType.BILLING,
-        IntentCategory.PAYMENT_ISSUE: AgentType.BILLING,
-        IntentCategory.ACCOUNT:    AgentType.BILLING,
-        IntentCategory.ACCOUNT_SECURITY: AgentType.BILLING,
+        IntentCategory.TECHNICAL:  AgentType.APPLICATION,
+        IntentCategory.TECHNICAL_LOGIN: AgentType.APPLICATION,
+        IntentCategory.TECHNICAL_CRASH: AgentType.APPLICATION,
+        IntentCategory.SERVICE_INCIDENT: AgentType.APPLICATION,
+        IntentCategory.LATENCY_ISSUE: AgentType.APPLICATION,
+        IntentCategory.DEPLOYMENT_ISSUE: AgentType.APPLICATION,
+        IntentCategory.DATABASE_ISSUE: AgentType.DATABASE,
+        IntentCategory.RESOURCE_ISSUE: AgentType.INFRASTRUCTURE,
+        IntentCategory.NETWORK_ISSUE: AgentType.INFRASTRUCTURE,
+        IntentCategory.RUNBOOK_QUERY: AgentType.GENERAL,
+        IntentCategory.ALERT_TRIAGE: AgentType.GENERAL,
+        IntentCategory.BILLING:    AgentType.DATABASE,
+        IntentCategory.REFUND:     AgentType.DATABASE,
+        IntentCategory.INVOICE:    AgentType.DATABASE,
+        IntentCategory.PAYMENT_ISSUE: AgentType.DATABASE,
+        IntentCategory.ACCOUNT:    AgentType.GENERAL,
+        IntentCategory.ACCOUNT_SECURITY: AgentType.APPLICATION,
         IntentCategory.ESCALATION: AgentType.ESCALATION,
         IntentCategory.HUMAN_HANDOFF: AgentType.ESCALATION,
         # 其余意图 → GENERAL（默认）
@@ -269,9 +286,10 @@ class AgentOrchestrator:
 
         # Agent 池：每种类型可有多个实例（水平扩展），因为因为列表里可以放不止一个 Agent 实例，在后面的函数_best_agent会选择最优的
         self._pool: Dict[AgentType, List[BaseAgent]] = {
-            AgentType.GENERAL:   [GeneralAgent(client, model, skill_manager)],
-            AgentType.TECHNICAL: [TechnicalAgent(client, model, skill_manager)],
-            AgentType.BILLING:   [BillingAgent(client, model, skill_manager)],
+            AgentType.GENERAL:   [GeneralOpsAgent(client, model, skill_manager)],
+            AgentType.APPLICATION: [ApplicationAgent(client, model, skill_manager)],
+            AgentType.DATABASE:   [DatabaseAgent(client, model, skill_manager)],
+            AgentType.INFRASTRUCTURE: [InfrastructureAgent(client, model, skill_manager)],
         }
 
     def set_skill_manager(self, skill_manager: Optional[Any]) -> None:
@@ -453,7 +471,7 @@ class AgentOrchestrator:
         supporting_agents = [
             agent_type
             for agent_type, score in ordered[1:]
-            if agent_type != AgentType.GENERAL and score >= 0.45 and score >= primary_score * 0.55
+            if agent_type != AgentType.GENERAL and score >= 0.45 and score >= min(primary_score, 1.0) * 0.55
         ]
 
         reason = self._routing_reason(req, available_scores, primary_agent, supporting_agents)
@@ -469,8 +487,9 @@ class AgentOrchestrator:
         msg = req.message.lower()
         scores = {
             AgentType.GENERAL: 0.1,
-            AgentType.TECHNICAL: 0.0,
-            AgentType.BILLING: 0.0,
+            AgentType.APPLICATION: 0.0,
+            AgentType.DATABASE: 0.0,
+            AgentType.INFRASTRUCTURE: 0.0,
         }
 
         if req.intent in (
@@ -489,36 +508,51 @@ class AgentOrchestrator:
             IntentCategory.TECHNICAL,
             IntentCategory.TECHNICAL_LOGIN,
             IntentCategory.TECHNICAL_CRASH,
+            IntentCategory.SERVICE_INCIDENT,
+            IntentCategory.LATENCY_ISSUE,
+            IntentCategory.DEPLOYMENT_ISSUE,
         ):
-            scores[AgentType.TECHNICAL] += 0.75
+            scores[AgentType.APPLICATION] += 0.75
 
         if req.intent in (
+            IntentCategory.DATABASE_ISSUE,
             IntentCategory.BILLING,
-            IntentCategory.ACCOUNT,
-            IntentCategory.ACCOUNT_SECURITY,
             IntentCategory.REFUND,
             IntentCategory.INVOICE,
             IntentCategory.PAYMENT_ISSUE,
         ):
-            scores[AgentType.BILLING] += 0.75
+            scores[AgentType.DATABASE] += 0.75
 
-        technical_kws = ["崩溃", "报错", "error", "crash", "无法登录", "登录失败", "500", "401", "验证码"]
-        billing_kws = ["退款", "退货", "扣款", "发票", "账单", "支付", "订阅", "refund", "invoice", "多扣"]
-        general_kws = ["订单", "物流", "快递", "配送", "会员", "积分", "咨询", "帮助"]
+        if req.intent in (
+            IntentCategory.RESOURCE_ISSUE,
+            IntentCategory.NETWORK_ISSUE,
+        ):
+            scores[AgentType.INFRASTRUCTURE] += 0.75
 
-        technical_hits = sum(1 for kw in technical_kws if kw in msg)
-        billing_hits = sum(1 for kw in billing_kws if kw in msg)
+        application_kws = ["5xx", "500", "报错", "error", "服务异常", "不可用", "激增", "发布", "部署", "上线", "回滚", "deploy", "release"]
+        database_kws = ["dbconnectionerror", "database", "数据库", "连接池", "慢查询", "锁等待", "deadlock", "sql"]
+        infrastructure_kws = ["cpu", "内存", "memory", "磁盘", "disk", "nginx", "网关", "gateway", "dns", "502", "503", "upstream"]
+        general_kws = ["runbook", "sop", "告警", "分级", "咨询", "帮助"]
+
+        application_hits = sum(1 for kw in application_kws if kw in msg)
+        database_hits = sum(1 for kw in database_kws if kw in msg)
+        infrastructure_hits = sum(1 for kw in infrastructure_kws if kw in msg)
         general_hits = sum(1 for kw in general_kws if kw in msg)
 
-        scores[AgentType.TECHNICAL] += min(0.45, technical_hits * 0.18)
-        scores[AgentType.BILLING] += min(0.45, billing_hits * 0.18)
+        scores[AgentType.APPLICATION] += min(0.55, application_hits * 0.18)
+        scores[AgentType.DATABASE] += min(0.55, database_hits * 0.25)
+        scores[AgentType.INFRASTRUCTURE] += min(0.45, infrastructure_hits * 0.18)
         scores[AgentType.GENERAL] += min(0.35, general_hits * 0.12)
 
         entities = req.entities or {}
         if entities.get("error_code"):
-            scores[AgentType.TECHNICAL] += 0.2
+            scores[AgentType.APPLICATION] += 0.2
+            if any("db" in code.lower() or "sql" in code.lower() for code in entities.get("error_code", [])):
+                scores[AgentType.DATABASE] += 0.3
+        if entities.get("service_name") or entities.get("version") or entities.get("status_code"):
+            scores[AgentType.APPLICATION] += 0.15
         if entities.get("amount"):
-            scores[AgentType.BILLING] += 0.15
+            scores[AgentType.DATABASE] += 0.15
         if entities.get("order_id"):
             scores[AgentType.GENERAL] += 0.1
 
@@ -645,3 +679,6 @@ class AgentOrchestrator:
                 key = f"{agent_type.value}_{i}"
                 penalty = penalties.get(key, 0.0)
                 agent.stats.monitor_penalty = min(max(penalty, 0.0), 0.9)
+
+
+
