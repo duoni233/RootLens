@@ -1,5 +1,7 @@
 # EchoMind 到 RootLens 的改造映射表
 
+本文件是目标蓝图，不代表功能已经实现。实际进度见 `03-progress.md`。
+
 ## 1. 项目定位
 
 | EchoMind | RootLens |
@@ -15,7 +17,7 @@
 | GeneralAgent | GeneralOpsAgent | 问题澄清、告警分级、总结 |
 | TechnicalAgent | ApplicationAgent | 应用错误、接口异常、发布问题 |
 | BillingAgent | DatabaseAgent | 数据库/数据链路问题，替代原账务域 |
-| 暂无 | InfrastructureAgent | 第二阶段加入基础设施诊断 |
+| 暂无 | InfrastructureAgent | 已加入基础设施诊断 Agent，工具与知识库仍待接入 |
 
 ## 3. Intent 映射
 
@@ -94,7 +96,7 @@ payment-service 从 10:05 开始 5xx 激增，刚发布 v2.3.7，日志里有 DB
 系统应能：
 
 ```text
-1. 识别为 service_incident + deployment_issue + database_issue
+1. 识别单个主意图 service_incident；发布和数据库线索通过实体、关键词及领域分数参与路由
 2. 抽取 payment-service / 10:05 / v2.3.7 / DBConnectionError
 3. 检索相关 runbook 和历史 incident
 4. 调用模拟 logs / metrics / deployments 工具

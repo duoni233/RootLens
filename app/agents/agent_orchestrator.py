@@ -327,7 +327,7 @@ class AgentOrchestrator:
         if self._needs_clarification(req):
             return OrchestratorResult(
                 request_id=req.request_id,
-                response="我还不能确定您要处理的是哪类问题。请补充一下是订单物流、退款账单、账户资料，还是技术故障？",
+                response="目前还无法判断故障类型。请补充受影响的服务、异常发生时间，以及错误码、日志或指标中的任一项。",
                 agent_type=AgentType.GENERAL,
                 intent=req.intent,
                 escalated=False,
@@ -338,7 +338,7 @@ class AgentOrchestrator:
                 routing_confidence=req.intent_confidence,
             )
 
-        # 复杂问题自动并行协作，例如同一句同时涉及登录故障和扣款/退款。
+        # 复合故障可由主 Agent 和辅助 Agent 并行诊断。
         decision = self._route_decision(req)
         if decision.multi_agent:
             return await self.run_parallel(req, decision)
@@ -388,7 +388,9 @@ class AgentOrchestrator:
                 parts.append(f"[{r.agent_type.value} - {role}]\n{r.content}")
 
         combined = "\n\n".join(parts) if parts else "抱歉，所有 Agent 均处理失败。"
-        escalated = any(isinstance(r, AgentResponse) and r.escalate for r in responses)
+        escalated = req.urgency == UrgencyLevel.CRITICAL or any(
+            isinstance(r, AgentResponse) and r.escalate for r in responses
+        )
 
         return OrchestratorResult(
             request_id=req.request_id,
@@ -431,16 +433,9 @@ class AgentOrchestrator:
         """
         结构化路由决策。
 
-        先处理紧急/转人工，再用领域分数决定主 Agent 和辅助 Agent。
+        明确转人工时升级；故障按领域分数选择主辅 Agent，紧急度在结果中标记。
         这样可以表达“主处理 + 辅助诊断”，避免关键词命中后无主次地拼接。
         """
-        if req.urgency == UrgencyLevel.CRITICAL:
-            return RoutingDecision(
-                primary_agent=AgentType.ESCALATION,
-                reason="紧急度为 CRITICAL，触发升级路由",
-                confidence=1.0,
-            )
-
         if req.intent in (IntentCategory.ESCALATION, IntentCategory.HUMAN_HANDOFF):
             return RoutingDecision(
                 primary_agent=AgentType.ESCALATION,

@@ -166,7 +166,7 @@ class SkillManager:
         )
 
         return (
-            "以下是当前请求可用的 EchoMind Skills。"
+            "以下是当前请求可用的 RootLens Skills。"
             "请优先遵循这些业务规则；如果与系统角色冲突，以系统角色和安全边界为准。\n\n"
             + "\n\n".join(blocks)
         )
