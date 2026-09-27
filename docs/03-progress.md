@@ -1,10 +1,10 @@
 # RootLens 进度记录
 
-更新日期：2026-09-24
+更新日期：2026-09-27
 
 ## 一句话
 
-EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，目标是内部系统故障诊断。目前完成了第一条请求的意图、实体、路由、Skills 和紧急度的本地逻辑验证；完整 HTTP /chat 尚未联调。
+EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，目标是内部系统故障诊断。本地固定测试通过；Docker 已独立启动，真实 /chat 返回了预期实体、主辅路由和故障诊断回复。但 LLM 意图 JSON 解析失败，最终走关键词兜底，因此第一阶段尚未完整通过。详情见 `04-live-integration.md`。
 
 ## 已完成
 
@@ -34,7 +34,7 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 
 ## 未完成
 
-1. RootLens `.env` 和 Docker 联调：先验证实际三路识别，再验证完整 `/chat` 返回与服务启动。
+1. 修正模型配置与输出预算的兼容问题，再验证真实 LLM 意图输出。当前兼容接口配置禁用了 Embedding，实际启用 LLM 与 Pattern 两路。
 2. 与故障场景相符的 Runbook / 历史 Incident 知识库，以及 logs、metrics、deployments 工具。
 3. 结构化 IncidentDiagnosis、执行 Trace、统一评测集和故障注入。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
