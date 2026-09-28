@@ -19,6 +19,7 @@ if importlib.util.find_spec("anthropic") is None:
 from agents.agent_orchestrator import AgentOrchestrator, AgentResponse, AgentType, Request
 from core.intent_recognizer import IntentCategory, IntentRecognizer, UrgencyLevel
 from core.skill_loader import SkillManager
+from core.llm_utils import non_thinking_options
 
 
 MVP = (
@@ -141,3 +142,54 @@ def test_recognizer_final_result_with_controlled_llm(recognizer):
     assert result.urgency == UrgencyLevel.HIGH
     assert result.entities["service_name"] == ["payment-service"]
     assert result.source_scores["llm"] == 0.9
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://api.anthropic.com", "https://example.invalid", "https://api.deepseek.com.example.invalid"],
+)
+def test_other_providers_do_not_receive_deepseek_options(base_url):
+    assert non_thinking_options(types.SimpleNamespace(base_url=base_url)) == {}
+
+
+def test_intent_call_disables_deepseek_thinking(recognizer):
+    captured = {}
+
+    async def create(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(
+            stop_reason="end_turn",
+            usage=types.SimpleNamespace(output_tokens=50),
+            content=[{"type": "text", "text": '{"intent":"service_incident","confidence":0.9}'}],
+        )
+
+    recognizer.client = types.SimpleNamespace(
+        base_url="https://api.deepseek.com/anthropic",
+        messages=types.SimpleNamespace(create=create),
+    )
+    result = asyncio.run(recognizer._llm_recognize(MVP, None))
+    assert result["intent"] == IntentCategory.SERVICE_INCIDENT
+    assert not result.get("failed")
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_agent_call_uses_reply_budget_and_non_thinking_mode(orchestrator):
+    captured = {}
+
+    async def create(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(
+            stop_reason="end_turn",
+            usage=types.SimpleNamespace(output_tokens=300),
+            content=[{"type": "text", "text": "需要核对发布时间和数据库连接池指标。"}],
+        )
+
+    agent = orchestrator._pool[AgentType.APPLICATION][0]
+    agent._client = types.SimpleNamespace(
+        base_url="https://api.deepseek.com/anthropic",
+        messages=types.SimpleNamespace(create=create),
+    )
+    content = asyncio.run(agent._call_llm(make_request(MVP, IntentCategory.SERVICE_INCIDENT)))
+    assert content
+    assert captured["max_tokens"] == 4096
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}

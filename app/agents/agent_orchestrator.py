@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from anthropic import AsyncAnthropic
 
 from core.intent_recognizer import IntentCategory, IntentRecognizer, UrgencyLevel
-from core.llm_utils import extract_text_content
+from core.llm_utils import extract_text_content, non_thinking_options
 
 logger = logging.getLogger(__name__)
 
@@ -180,10 +180,13 @@ class BaseAgent:
         resp = await self._client.messages.create(#调用的是AsyncAnthropic的messages.create方法，传入模型、system prompt、消息列表等参数，返回一个响应对象（实际上也就是调用大模型了，使用的是AsyncAnthropic的SDK）
             
             model=self._model,
-            max_tokens=1024,
+            max_tokens=4096,
             system=self._build_system_prompt(req),
             messages=messages,
+            **non_thinking_options(self._client),
         )
+        logger.info("LLM 回复输出: agent=%s stop_reason=%s output_tokens=%s",
+                    self.agent_type.value, resp.stop_reason, resp.usage.output_tokens)
         return extract_text_content(resp.content)
 
     def _build_system_prompt(self, req: Request) -> str:

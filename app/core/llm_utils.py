@@ -1,5 +1,13 @@
 """LLM response helpers shared by Anthropic-compatible providers."""
 from typing import Any, Iterable, List
+from urllib.parse import urlparse
+
+
+def non_thinking_options(client: Any) -> dict:
+    """Disable DeepSeek's default thinking for bounded JSON and reply calls."""
+    if urlparse(str(getattr(client, "base_url", ""))).hostname == "api.deepseek.com":
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {}
 # Iterable 的意思是：
 # 可以被 for 循环遍历的东西
 #
