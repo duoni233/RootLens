@@ -1,0 +1,8 @@
+[
+  {"record_id":"D001","source_type":"deployment","service_name":"payment-service","environment":"demo","observed_at":"2026-09-01T10:00:00+08:00","summary":"Deployed payment-service v2.3.7","attributes":{"version":"v2.3.7","status":"succeeded"}},
+  {"record_id":"D002","source_type":"deployment","service_name":"payment-service","environment":"demo","observed_at":"2026-09-01T09:05:00+08:00","summary":"Deployed payment-service v2.3.6","attributes":{"version":"v2.3.6","status":"succeeded"}},
+  {"record_id":"D003","source_type":"deployment","service_name":"payment-service","environment":"demo","observed_at":"2026-09-01T09:04:59+08:00","summary":"Earlier deployment","attributes":{"version":"v2.3.5","status":"succeeded"}},
+  {"record_id":"D004","source_type":"deployment","service_name":"payment-service","environment":"demo","observed_at":"2026-09-01T10:05:01+08:00","summary":"Later deployment attempt","attributes":{"version":"v2.3.8","status":"failed"}},
+  {"record_id":"D005","source_type":"deployment","service_name":"order-service","environment":"demo","observed_at":"2026-09-01T10:00:00+08:00","summary":"Order service deployment","attributes":{"version":"v1.8.1","status":"succeeded"}},
+  {"record_id":"D006","source_type":"deployment","service_name":"payment-service","environment":"prod","observed_at":"2026-09-01T10:00:00+08:00","summary":"Production deployment","attributes":{"version":"v2.3.6","status":"succeeded"}}
+]

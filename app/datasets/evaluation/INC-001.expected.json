@@ -1,0 +1,6 @@
+{
+  "incident_id": "INC-001",
+  "simulated": true,
+  "expected_diagnosis": "Database connection pool saturation is a candidate, not proof of deployment causation.",
+  "expected_record_ids": {"log": ["L001"], "metric": ["M002", "M003"], "deployment": ["D001"]}
+}
