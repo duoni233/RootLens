@@ -9,7 +9,7 @@
 关键设计：
   - 上下文构建时三级记忆融合，按重要性 + 时效性排序
   - 工作记忆超过阈值时自动压缩（LLM 摘要），防止 context 爆炸
-  - 所有 Embedding 通过 Anthropic API 生成，无本地模型
+  - ChromaDB 默认 Embedding 在客户端生成，Anthropic 用于摘要/可选画像
 """
 import hashlib
 import asyncio
@@ -25,7 +25,7 @@ import chromadb
 import redis.asyncio as redis
 from anthropic import AsyncAnthropic
 
-from core.llm_utils import extract_text_content
+from core.llm_utils import extract_text_content, non_thinking_options
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,12 @@ class MemoryManager:
         api_key:      str = "",
         base_url:     Optional[str] = None,
         model:        str = "claude-3-5-sonnet-20241022",
+        *,
+        enable_user_profile: bool = True,
+        enable_episodic_recall: bool = True,
     ):
+        self.enable_user_profile = enable_user_profile
+        self.enable_episodic_recall = enable_episodic_recall
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -122,7 +127,8 @@ class MemoryManager:
         # 情景记忆：存储历史对话片段
         self._episodic = chroma.get_or_create_collection("episodic")
         # 用户画像：存储提炼出的偏好和实体
-        self._profile  = chroma.get_or_create_collection("user_profile")
+        self._profile = (chroma.get_or_create_collection("user_profile")
+                         if enable_user_profile else None)
 
     # ── 写入 ──────────────────────────────────────────────────────────────────
 
@@ -162,6 +168,8 @@ class MemoryManager:
         从当前工作记忆中提炼用户偏好，更新用户画像。
         用 LLM 提炼偏好，然后存入 ChromaDB（ChromaDB 内置 embedding，不依赖外部 API）。
         """
+        if not self.enable_user_profile:
+            return
         user_id = self._safe_text(user_id)
         conv_id = self._safe_text(conv_id)
         messages = await self._get_working_memory(user_id, conv_id)
@@ -180,6 +188,7 @@ class MemoryManager:
             resp = await self._client.messages.create(
                 model=self._model, max_tokens=512, temperature=0.0,
                 messages=[{"role": "user", "content": prompt}],
+                **non_thinking_options(self._client),
             )
             raw = extract_text_content(resp.content)
             s, e = raw.find("{"), raw.rfind("}") + 1
@@ -221,10 +230,11 @@ class MemoryManager:
         recent = await self._get_working_memory(user_id, conv_id)
 
         # 2. 情景记忆（跨会话语义检索）
-        history = await self._search_episodic(user_id, query or (recent[-1].content if recent else ""))
+        history = (await self._search_episodic(user_id, query or (recent[-1].content if recent else ""))
+                   if self.enable_episodic_recall else [])
 
         # 3. 用户画像
-        profile = await self._get_profile(user_id)
+        profile = await self._get_profile(user_id) if self.enable_user_profile else {}
 
         # 4. 会话摘要（如果已压缩过）
         summary = await self._redis.get(self._summary_key(user_id, conv_id)) or ""
@@ -246,12 +256,13 @@ class MemoryManager:
           3. 旧消息存入情景记忆（ChromaDB）供跨会话检索
           4. 工作记忆只保留最近 5 条
         """
-        messages = await self._get_working_memory(user_id, conv_id)
+        key = self._wm_key(user_id, conv_id)
+        snapshot = await self._redis.lrange(key, 0, -1)
+        messages = self._decode_messages(snapshot)
         if len(messages) < self.COMPRESS_AT:
             return
 
         to_compress = messages[:-5]   # 保留最近 5 条
-        keep        = messages[-5:]
 
         # LLM 摘要
         text = self._safe_text("\n".join(f"{m.role.value}: {m.content}" for m in to_compress))
@@ -260,29 +271,35 @@ class MemoryManager:
             resp = await self._client.messages.create(
                 model=self._model, max_tokens=256, temperature=0.0,
                 messages=[{"role": "user", "content": prompt}],
+                **non_thinking_options(self._client),
             )
             summary = self._safe_text(extract_text_content(resp.content)).strip()
-        except Exception:
-            summary = f"对话包含 {len(to_compress)} 条消息（摘要生成失败）"
+            if not summary or getattr(resp, "stop_reason", None) == "max_tokens":
+                raise ValueError("summary is empty or truncated")
+        except Exception as ex:
+            logger.warning(f"摘要失败，保留全部工作记忆: {ex}")
+            return
 
         # 存摘要到 Redis
         skey = self._summary_key(user_id, conv_id)
-        old_summary = await self._redis.get(skey) or ""
-        new_summary = self._safe_text(f"{old_summary}\n{summary}").strip()
-        await self._redis.setex(skey, 86400, new_summary)
-
-        # 旧消息存入情景记忆
+        # Commit summary and trim atomically, only if no messages changed during summarization.
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(key, skey)
+                if await pipe.lrange(key, 0, -1) != snapshot:
+                    logger.info("会话已更新，跳过本次压缩")
+                    return
+                old_summary = await pipe.get(skey) or ""
+                new_summary = self._safe_text(f"{old_summary}\n{summary}").strip()
+                pipe.multi()
+                pipe.setex(skey, 86400, new_summary)
+                pipe.ltrim(key, 0, 4)
+                pipe.expire(key, 86400)
+                await pipe.execute()
+        except (redis.WatchError, redis.RedisError) as ex:
+            logger.warning(f"压缩未提交，保留工作记忆: {ex}")
+            return
         await self._store_episodic(user_id, conv_id, text, summary)
-
-        # 重置工作记忆为最近 5 条
-        key = self._wm_key(user_id, conv_id)
-        await self._redis.delete(key)
-        for m in reversed(keep):
-            await self._redis.lpush(key, json.dumps({
-                "role": m.role.value, "content": m.content,
-                "ts": m.timestamp.isoformat(), "metadata": m.metadata,
-            }))
-        await self._redis.expire(key, 86400)
         logger.info(f"工作记忆压缩完成: {user_id}/{conv_id}，摘要 {len(summary)} 字")
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
@@ -290,6 +307,10 @@ class MemoryManager:
     async def _get_working_memory(self, user_id: str, conv_id: str) -> List[Message]:
         key  = self._wm_key(user_id, conv_id)
         raws = await self._redis.lrange(key, 0, self.WORKING_MAX - 1)
+        return self._decode_messages(raws)
+
+    @staticmethod
+    def _decode_messages(raws: List[str]) -> List[Message]:
         msgs = []
         for raw in reversed(raws):  # Redis lpush 最新在前，reversed 还原时序
             d = json.loads(raw)
@@ -303,6 +324,8 @@ class MemoryManager:
 
     async def _search_episodic(self, user_id: str, query: str) -> List[str]:
         """语义检索情景记忆。ChromaDB 内置 embedding，不依赖外部 API。"""
+        if not self.enable_episodic_recall:
+            return []
         query_text = self._safe_text(query).strip()
         if not query_text:
             return []
@@ -341,6 +364,8 @@ class MemoryManager:
 
     async def _get_profile(self, user_id: str) -> Dict[str, Any]:
         """获取用户画像（取最新一条）。"""
+        if not self.enable_user_profile:
+            return {}
         try:
             results = await asyncio.to_thread(self._profile.get, where={"user_id": user_id}, limit=1)
             if results["documents"]:

@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from anthropic import AsyncAnthropic
 
-from core.llm_utils import extract_text_content
+from core.llm_utils import extract_text_content, non_thinking_options
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,17 @@ class ToolResult:
     cached:         bool = False
     latency_ms:     float = 0.0
     reranked:       bool = False   # 是否经过重排
+    rewrite_status: str = "skipped"
+    retrieval_status: str = "skipped"
+    rerank_status: str = "skipped"
+    stage_errors: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class RAGStageResult:
+    data: Any
+    status: str
+    error: Optional[str] = None
 
 
 @dataclass
@@ -177,7 +188,7 @@ class MCPToolManager:
         if use_cache and tool.cache_ttl > 0:
             cached = self._get_cache(name, params, cache_rerank_top_k)
             if cached is not None:
-                cached_data, cached_reranked = cached
+                cached_data, cached_reranked, cached_status, cached_errors = cached
                 tool.stats.total += 1
                 tool.stats.success += 1
                 return ToolResult(
@@ -186,6 +197,8 @@ class MCPToolManager:
                     tool_name=name,
                     cached=True,
                     reranked=cached_reranked,
+                    retrieval_status="performed", rerank_status=cached_status,
+                    stage_errors=dict(cached_errors),
                 )
 
         # 熔断检查
@@ -209,16 +222,24 @@ class MCPToolManager:
 
             # 重排（针对返回列表的检索工具）
             reranked = False
+            rerank_status, stage_errors = "skipped", {}
             if rerank_top_k > 0 and tool.supports_rerank and isinstance(data, list):
                 query = params.get("query", "")
-                data, reranked = await self._rerank(query, data, rerank_top_k), True
+                ranked = await self.rerank_result(query, data, rerank_top_k)
+                data, rerank_status = ranked.data, ranked.status
+                reranked = ranked.status == "performed"
+                if ranked.error:
+                    stage_errors["rerank"] = ranked.error
 
             # 写缓存：缓存最终返回结果，避免下次命中未重排的原始结果。
             if tool.cache_ttl > 0:
-                self._set_cache(name, params, data, tool.cache_ttl, cache_rerank_top_k, reranked)
+                self._set_cache(name, params, data, tool.cache_ttl, cache_rerank_top_k,
+                                reranked, rerank_status, stage_errors)
 
             return ToolResult(success=True, data=data, tool_name=name,
-                              latency_ms=latency, reranked=reranked)
+                          latency_ms=latency, reranked=reranked,
+                          retrieval_status="performed", rerank_status=rerank_status,
+                          stage_errors=stage_errors)
 
         except asyncio.TimeoutError:
             tool.stats.failed += 1
@@ -243,7 +264,8 @@ class MCPToolManager:
     ) -> ToolResult:
         """工具不可用时返回降级结果，而不是把空错误直接暴露给调用方。"""
         if tool.fallback is None:
-            return ToolResult(success=False, data=None, tool_name=tool.name, error=error)
+            return ToolResult(success=False, data=None, tool_name=tool.name, error=error,
+                              retrieval_status="failed")
         try:
             data = tool.fallback(params, context, error)
             if asyncio.iscoroutine(data):
@@ -253,6 +275,7 @@ class MCPToolManager:
                 data=data,
                 tool_name=tool.name,
                 error=error,
+                retrieval_status="degraded",
             )
         except Exception as ex:
             logger.error(f"工具降级失败: {tool.name} — {ex}")
@@ -280,6 +303,10 @@ class MCPToolManager:
     # ── 查询改写（解决召回不全）────────────────────────────────────────────────
 
     async def rewrite_query(self, query: str, n: int = 3) -> List[str]:
+        """Backwards-compatible list interface; status is available in rewrite_query_result."""
+        return (await self.rewrite_query_result(query, n)).data
+
+    async def rewrite_query_result(self, query: str, n: int = 3) -> RAGStageResult:
         """
         用 LLM 将原始查询改写为 n 个不同角度的子查询。
 
@@ -290,6 +317,8 @@ class MCPToolManager:
           原始: "退款流程"
           改写: ["如何申请退款", "退款需要多少天", "退款政策是什么"]
         """
+        if n <= 0 or not query.strip():
+            return RAGStageResult([query], "skipped")
         prompt = f"""将以下用户查询改写为 {n} 个不同角度的搜索子查询，用于检索知识库。
 要求：每个子查询角度不同，覆盖原始问题的不同方面。
 原始查询: "{query}"
@@ -299,18 +328,22 @@ class MCPToolManager:
             resp = await self._client.messages.create(
                 model=self._model, max_tokens=256, temperature=0.3,
                 messages=[{"role": "user", "content": prompt}],
+                **non_thinking_options(self._client),
             )#self._client相当于一个异步的AsyncAnthropic(
 #     api_key=api_key,
 #     base_url="https://api.deepseek.com/anthropic"
 # )
             raw = extract_text_content(resp.content)#把 Anthropic/兼容接口返回的 resp.content，统一提取成普通字符串。
-            s, e = raw.find("["), raw.rfind("]") + 1
-            queries = json.loads(raw[s:e])
+            queries = self._json_array(raw, resp)
+            if not queries or any(not isinstance(q, str) or not q.strip() or len(q) > 512
+                                  for q in queries) or len(queries) > n:
+                raise ValueError("rewrite must return a bounded list of non-empty strings")
             # 原始查询也保留，去重
-            return list(dict.fromkeys([query] + queries))#dict.fromkeys(...) 会去重
+            return RAGStageResult(list(dict.fromkeys([query] + [q.strip() for q in queries])),
+                                  "performed")
         except Exception as ex:
             logger.warning(f"查询改写失败，使用原始查询: {ex}")
-            return [query]
+            return RAGStageResult([query], "failed", str(ex))
 
         
 # 把一个用户问题改写成多个子问题，并行查知识库，合并结果，去重，再用 LLM 重排，最后返回最相关的 Top-K
@@ -320,6 +353,9 @@ class MCPToolManager:
         query: str,
         top_k: int = 5,
         context: Optional[Dict[str, Any]] = None,
+        *,
+        rewrite_enabled: bool = True,
+        rerank_enabled: bool = True,
     ) -> ToolResult:
         """
         完整的检索优化链路：查询改写 → 并行召回 → 去重 → 重排 → Top-K
@@ -327,7 +363,11 @@ class MCPToolManager:
         这是解决"检索不全、召回不好"的完整方案。
         """
         # 1. 查询改写：生成多角度子查询
-        sub_queries = await self.rewrite_query(query, n=3)
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 100:
+            raise ValueError("top_k must be between 1 and 100")
+        rewrite = await self.rewrite_query_result(query, n=3 if rewrite_enabled else 0)
+        sub_queries = rewrite.data
+        errors = {"rewrite": rewrite.error} if rewrite.error else {}
         logger.info(f"查询改写: {query!r} → {sub_queries}")#!r 会用更适合调试的形式显示字符串，比如带引号：'退款多久到账'
 
         # 2. 并行召回：所有子查询同时检索
@@ -340,24 +380,56 @@ class MCPToolManager:
 
         # 3. 合并去重（按内容哈希去重）
         seen, merged = set(), []
+        failures = []
         for r in results:
-            if isinstance(r, ToolResult) and r.success and isinstance(r.data, list):
+            if (isinstance(r, ToolResult) and r.success and not r.error
+                    and isinstance(r.data, list)):
                 for item in r.data:
-                    key = hashlib.md5(str(item).encode()).hexdigest()#这条结果的唯一编号变成MD5哈希值的格式
+                    if isinstance(item, dict) and item.get("fallback"):
+                        failures.append("fallback text is not retrieved knowledge")
+                        continue
+                    if isinstance(item, dict) and item.get("chunk_id"):
+                        key = (item.get("collection", ""), item["chunk_id"])
+                    else:
+                        value = dict(item) if isinstance(item, dict) else item
+                        if isinstance(value, dict):
+                            value.pop("score", None)
+                        key = json.dumps(value, sort_keys=True, ensure_ascii=False)
                     if key not in seen:#如果这条结果没见过就记录它并放进 merged，利用了set是集合，它的特点是：查某个东西在不在里面很快并且天然不重复
                         seen.add(key)
                         merged.append(item)
+            else:
+                failures.append(str(getattr(r, "error", None) or r or "invalid retrieval result"))
+
+        retrieval_status = "degraded" if failures else "performed"
+        if failures:
+            errors["retrieval"] = "; ".join(failures)
 
         if not merged:
-            return ToolResult(success=False, data=[], tool_name=tool_name, error="所有子查询均无结果")
+            return ToolResult(success=not failures, data=[], tool_name=tool_name,
+                              error=errors.get("retrieval"), rewrite_status=rewrite.status,
+                              retrieval_status="failed" if failures else "performed",
+                              stage_errors=errors)
 
         # 4. 重排：用 LLM 对合并结果按相关性打分，取 Top-K
-        reranked = await self._rerank(query, merged, top_k)
-        return ToolResult(success=True, data=reranked, tool_name=tool_name, reranked=True)
+        tool = self._tools.get(tool_name)
+        ranked = (await self.rerank_result(query, merged, top_k)
+                  if rerank_enabled and tool and tool.supports_rerank
+                  else RAGStageResult(merged[:top_k], "skipped"))
+        if ranked.error:
+            errors["rerank"] = ranked.error
+        return ToolResult(success=True, data=ranked.data, tool_name=tool_name,
+                          reranked=ranked.status == "performed", rewrite_status=rewrite.status,
+                          retrieval_status=retrieval_status, rerank_status=ranked.status,
+                          stage_errors=errors)
 
     # ── 结果重排（解决召回不好）──────────────────────────────────────────────
 
     async def _rerank(self, query: str, items: List[Any], top_k: int) -> List[Any]:
+        """Preserve the original list-returning interface."""
+        return (await self.rerank_result(query, items, top_k)).data
+
+    async def rerank_result(self, query: str, items: List[Any], top_k: int) -> RAGStageResult:
         """
         用 LLM 对召回结果重新打分排序。
 
@@ -365,11 +437,14 @@ class MCPToolManager:
         LLM 能理解语义相关性，重排后 Top-K 质量显著提升。
         """
         if len(items) <= top_k:
-            return items
+            return RAGStageResult(items, "skipped")
 
         # 将结果序列化为文本供 LLM 评分
-        items_text = "\n".join(f"{i}. {json.dumps(item, ensure_ascii=False)[:200]}"
-                               for i, item in enumerate(items))
+        # IDs/metadata must not crowd the actual content out of the rerank prompt.
+        passages = [({"title": item.get("title", ""), "content": str(item.get("content") or "")[:600]}
+                     if isinstance(item, dict) else item) for item in items]
+        items_text = "\n".join(f"{i}. {json.dumps(item, ensure_ascii=False)[:700]}"
+                               for i, item in enumerate(passages))
         prompt = f"""根据用户查询，对以下检索结果按相关性打分（0-10），返回 JSON 数组。
 用户查询: "{query}"
 检索结果:
@@ -383,15 +458,29 @@ class MCPToolManager:
             resp = await self._client.messages.create(
                 model=self._model, max_tokens=256, temperature=0.0,
                 messages=[{"role": "user", "content": prompt}],
+                **non_thinking_options(self._client),
             )
             raw = extract_text_content(resp.content)
-            s, e = raw.find("["), raw.rfind("]") + 1
-            order: List[int] = json.loads(raw[s:e])
-            reranked = [items[i] for i in order if 0 <= i < len(items)]
-            return reranked[:top_k]
+            order = self._json_array(raw, resp)
+            if (len(order) != len(items) or any(type(i) is not int for i in order)
+                    or set(order) != set(range(len(items)))):
+                raise ValueError("rerank must return a permutation of all result indices")
+            return RAGStageResult([items[i] for i in order[:top_k]], "performed")
         except Exception as ex:
             logger.warning(f"重排失败，返回原始顺序: {ex}")
-            return items[:top_k]
+            return RAGStageResult(items[:top_k], "failed", str(ex))
+
+    @staticmethod
+    def _json_array(raw: str, response) -> list:
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            raise ValueError("JSON output was truncated")
+        start = raw.find("[")
+        if start < 0:
+            raise ValueError("response does not contain a JSON array")
+        value, _ = json.JSONDecoder().raw_decode(raw[start:])
+        if not isinstance(value, list):
+            raise ValueError("response must be a JSON array")
+        return value
 
     # ── 缓存 ──────────────────────────────────────────────────────────────────
 
@@ -399,12 +488,12 @@ class MCPToolManager:
         payload = {"params": params, "rerank_top_k": rerank_top_k}
         return f"{name}:{hashlib.md5(json.dumps(payload, sort_keys=True).encode()).hexdigest()}"
 
-    def _get_cache(self, name: str, params: Dict, rerank_top_k: int = 0) -> Optional[Tuple[Any, bool]]:
+    def _get_cache(self, name: str, params: Dict, rerank_top_k: int = 0) -> Optional[Tuple]:
         key = self._cache_key(name, params, rerank_top_k)
         if key in self._cache:
-            data, expire_at, reranked = self._cache[key]
+            data, expire_at, reranked, status, errors = self._cache[key]
             if time.monotonic() < expire_at:
-                return data, reranked
+                return data, reranked, status, errors
             del self._cache[key]
         return None
 
@@ -416,12 +505,15 @@ class MCPToolManager:
         ttl: float,
         rerank_top_k: int = 0,
         reranked: bool = False,
+        rerank_status: str = "skipped",
+        stage_errors: Optional[Dict[str, str]] = None,
     ) -> None:
         if len(self._cache) >= 5000:
             # 清掉最旧的 1/4
             for k in list(self._cache)[:1250]:
                 del self._cache[k]
-        self._cache[self._cache_key(name, params, rerank_top_k)] = (data, time.monotonic() + ttl, reranked)
+        self._cache[self._cache_key(name, params, rerank_top_k)] = (
+            data, time.monotonic() + ttl, reranked, rerank_status, dict(stage_errors or {}))
 
     # ── 参数校验 ──────────────────────────────────────────────────────────────
 

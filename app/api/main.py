@@ -107,6 +107,7 @@ async def lifespan(app: FastAPI):
     from memory.conversation_memory import MemoryManager
     from monitor.performance_monitor import PerformanceMonitor
     from core.skill_loader import SkillManager
+    from core.rootlens_config import memory_options, knowledge_collection
 
     cfg = _anthropic_cfg()
     logger.info(f"模型: {cfg['model']}  base_url: {cfg.get('base_url', '(官方)')}")
@@ -144,6 +145,7 @@ async def lifespan(app: FastAPI):
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url"),
         model=cfg["model"],
+        **memory_options(),
     )
 
     # MCP 工具管理器 + RAG 知识库（基于 ChromaDB 的真实检索）
@@ -156,14 +158,18 @@ async def lifespan(app: FastAPI):
         chroma_host=os.getenv("CHROMA_HOST", "chromadb"),
         chroma_port=int(os.getenv("CHROMA_PORT", "8000")),
         chroma_path=os.getenv("CHROMA_PERSIST_DIRECTORY", "/app/data/chroma"),
+        collection_name=knowledge_collection(),
+        load_default_docs=False,
+        max_distance=float(os.getenv("ROOTLENS_KNOWLEDGE_MAX_DISTANCE", "0.8")),
     )
+    await asyncio.to_thread(kb.load_rootlens_documents)
     logger.info(f"知识库已加载: {await kb.doc_count_async()} 个文档片段")
     #给工具管理器注册 knowledge_search,这个函数是降级方案。如果知识库检索失败，不是直接崩，而是返回一条“知识库暂时不可用”的结果
     def knowledge_fallback(params: Dict[str, Any], context: Optional[Dict[str, Any]], error: str):
         query = params.get("query", "")
         return [{
             "title": "知识库降级结果",
-            "content": f"知识库暂时不可用，未能完成对“{query}”的语义检索。请稍后重试，或转人工客服确认。",
+            "content": f"知识库暂时不可用，未能完成对“{query}”的语义检索。该降级说明不是故障处置知识。",
             "score": 0.0,
             "fallback": True,
             "error": error,
@@ -361,7 +367,8 @@ async def chat(req: ChatRequest):#我要把用户 POST 过来的 JSON 请求体�
     await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, result.response)
 
     # 5. 异步更新用户画像（不阻塞响应）
-    asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
+    if _memory.enable_user_profile:
+        asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
 
     return ChatResponse(
         conv_id=conv_id,
@@ -395,13 +402,14 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
         return "", False
     try:
         result = await _tool_manager.search_with_rewrite("knowledge_search", message, top_k=top_k)
-        if not result.success or not isinstance(result.data, list) or not result.data:#isinstanced的作用是判断result.data 是不是 list 类型
+        if not result.success or result.error or not isinstance(result.data, list) or not result.data:#isinstanced的作用是判断result.data 是不是 list 类型
             return "", False
 
         parts = ["[知识库检索结果]"]
         used = False
         for i, item in enumerate(result.data[:top_k], start=1):
-            if not isinstance(item, dict):
+            if (not isinstance(item, dict) or item.get("fallback")
+                    or not item.get("chunk_id") or not item.get("source_ref")):
                 continue
             title = str(item.get("title", "未命名文档"))#字典.get("键名", 默认值)得到字典的值
             content = str(item.get("content", "")).strip()
@@ -409,11 +417,11 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
             if not content:
                 continue
             used = True
-            parts.append(f"{i}. 标题: {title}\n   相关度: {score}\n   内容: {content[:600]}")
+            parts.append(f"{i}. 标题: {title}\n   来源: {item['source_ref']} ({item['chunk_id']})\n   相关度: {score}\n   内容: {content[:600]}")
 
         if not used:
             return "", False
-        parts.append("请优先依据以上知识库内容回答；如果知识库内容不足，再结合通用客服能力说明。")
+        parts.append("以上是处置规则或历史经验，不是本次现场事实；知识不足时明确说明，不推断唯一根因。")
         return "\n".join(parts), True
     except Exception as ex:
         logger.warning(f"构建知识库上下文失败: {ex}")
@@ -468,7 +476,10 @@ async def search(query: str, top_k: int = 5):
     if _tool_manager is None:
         raise HTTPException(503, "服务未就绪")
     result = await _tool_manager.search_with_rewrite("knowledge_search", query, top_k=top_k)
-    return {"query": query, "results": result.data, "reranked": result.reranked}
+    return {"query": query, "results": result.data, "reranked": result.reranked,
+            "success": result.success, "error": result.error,
+            "rewrite_status": result.rewrite_status, "retrieval_status": result.retrieval_status,
+            "rerank_status": result.rerank_status, "stage_errors": result.stage_errors}
 
 
 class DocInput(BaseModel):

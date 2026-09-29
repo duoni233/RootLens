@@ -1,0 +1,6 @@
+[
+  {"file":"db-connection-pool.md","document_id":"RL-RB-DB-001","title":"Database connection pool exhaustion Runbook","source_type":"runbook","service_name":"general","published_at":"2026-08-01T00:00:00+08:00"},
+  {"file":"application-5xx.md","document_id":"RL-RB-APP-001","title":"Application HTTP 5xx failure Runbook","source_type":"runbook","service_name":"general","published_at":"2026-08-01T00:00:00+08:00"},
+  {"file":"deployment-troubleshooting.md","document_id":"RL-RB-DEP-001","title":"Deployment troubleshooting Runbook","source_type":"runbook","service_name":"general","published_at":"2026-08-01T00:00:00+08:00"},
+  {"file":"incident-20260814.md","document_id":"RL-HIST-20260814","title":"Order-service traffic surge historical incident","source_type":"historical_incident","service_name":"order-service","published_at":"2026-08-15T00:00:00+08:00"}
+]

@@ -8,6 +8,8 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 
 2026-09-29：Stage 2 第 1 批证据层完成。新增 QueryContext、Operational Evidence/Bundle、模拟 INC-001 与三个查询工具；沿用原 ToolManager。隔离容器测试 52 项通过（Stage 1 15 + Stage 2 37），独立工具演示通过，未接入 Agent 或 /chat。详见 `07-stage2-batch1-acceptance.md`。
 
+2026-09-29：第 2 批知识与 Memory 隔离完成。独立 rootlens_runbooks_v1、三份 Runbook 和一份较早模拟历史案例；RAG 状态、来源 ID/去重、证据增强 query 的独立契约；RootLens 默认禁止画像读写及跨会话召回，摘要失败/并发更新时不裁剪。94 项测试通过（15 + 37 + 42），包括固定向量的真实 Chroma 和临时真实 Redis；尚未用真实 LLM 重验 RAG，也未部署本批代码。详见 `08-stage2-batch2-acceptance.md`。
+
 ## 已完成
 
 | 模块 | 原版 EchoMind | RootLens 当前实现 | 验证 |
@@ -36,9 +38,9 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 
 ## 未完成
 
-1. RAG 改写/重排和画像更新仍有模型输出解析问题，尚未使用本次两处调用的兼容处理。当前兼容接口配置禁用了 Embedding，实际启用 LLM 与 Pattern 两路。
-2. 与故障场景相符的 Runbook / 历史 Incident 知识库；已实现的模拟 logs、metrics、deployments 工具尚未接入 /chat。
+1. 真实 LLM 下的 RAG 改写/重排需再次联调；确定性兼容测试已通过，但不能替代真实模型验收。当前意图兼容接口配置仍禁用 Embedding，实际启用 LLM 与 Pattern 两路。
+2. 现场工具与证据增强检索尚未接入 /chat，Memory/Knowledge 隔离配置的部署生效也待验收；现有运行容器仍使用本批改动之前的镜像。
 3. 结构化 IncidentDiagnosis、执行 Trace、统一评测集和故障注入。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
 
-下一步：Stage 2 第 2 批，RootLens 专用知识集合、Runbook、必要 RAG 兼容与 Memory 隔离。之后第 3 批再让证据影响路由并接入真实 /chat。当前没有完成整个 Stage 2。
+下一步：先评审第 2 批结果，再批准第 3 批共用诊断管线、证据影响路由与 API 衔接。第 4 批才进行 Docker + 真实完整 /chat 验收。当前没有完成整个 Stage 2。

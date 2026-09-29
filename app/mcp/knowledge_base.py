@@ -14,7 +14,10 @@ ChromaDB 在这里的角色：
 """
 import asyncio
 import hashlib
+import json
 import logging
+import math
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
@@ -27,7 +30,7 @@ class KnowledgeBase:
     基于 ChromaDB 的 RAG 知识库。
 
     ChromaDB 内置了 Embedding 模型（all-MiniLM-L6-v2），
-    调用 add() 时自动生成向量，query() 时自动做语义匹配。
+    调用 upsert() 时自动生成向量，query() 时自动做语义匹配。
     不需要额外调用 Anthropic Embeddings API。
     """
 
@@ -38,19 +41,31 @@ class KnowledgeBase:
         chroma_host: str = "localhost",
         chroma_port: int = 8000,
         chroma_path: str = "./data/chroma",
+        *,
+        collection_name: str = COLLECTION_NAME,
+        load_default_docs: bool = True,
+        max_distance: Optional[float] = None,
+        client=None,
+        embedding_function=None,
     ):
-        # 优先连接独立 ChromaDB 服务（服务端内置 embedding 模型，客户端无需下载）
+        self.collection_name = collection_name
+        if max_distance is not None and (not math.isfinite(max_distance) or not 0 <= max_distance <= 2):
+            raise ValueError("max_distance must be a finite cosine distance between 0 and 2")
+        self.max_distance = max_distance
+        # Embedding is performed by the client, including when using HttpClient.
         self._use_server = False
         try:
-            # HttpClient 默认也会初始化 ChromaDB telemetry；显式关闭避免 posthog 兼容性错误日志。
-            self._client = chromadb.HttpClient(#创建一个 ChromaDB HTTP 客户端,连接到 host:port 上正在运行的 ChromaDB 服务。
-                host=chroma_host,
-                port=chroma_port,
-                settings=chromadb.Settings(anonymized_telemetry=False),
-            )
-            self._client.heartbeat()
-            self._use_server = True
-            logger.info(f"知识库 ChromaDB 已连接: {chroma_host}:{chroma_port}")
+            if client is not None:
+                self._client = client
+            else:
+                # Disable optional telemetry; embedding remains client-side.
+                self._client = chromadb.HttpClient(
+                    host=chroma_host, port=chroma_port,
+                    settings=chromadb.Settings(anonymized_telemetry=False),
+                )
+                self._client.heartbeat()
+                self._use_server = True
+                logger.info(f"知识库 ChromaDB 已连接: {chroma_host}:{chroma_port}")
         except Exception:
             logger.info(f"知识库 ChromaDB 服务不可用，使用本地模式: {chroma_path}")
             self._client = chromadb.PersistentClient(
@@ -58,20 +73,22 @@ class KnowledgeBase:
                 settings=chromadb.Settings(anonymized_telemetry=False),
             )
 
-        # 使用服务端时不传 embedding_function，让服务端处理
-        # 本地模式时也不传，使用 ChromaDB 默认的（会触发模型下载）
-        self._collection = self._client.get_or_create_collection(
-            name=self.COLLECTION_NAME,#knowledge_base collection专门存 RAG 业务知识库文档
-            metadata={"description": "EchoMind RAG 知识库"},
-        )
+        options = {"name": collection_name,
+                   "metadata": {"description": "RAG knowledge"}}
+        if collection_name != self.COLLECTION_NAME:
+            options["metadata"]["hnsw:space"] = "cosine"
+        if embedding_function is not None:
+            options["embedding_function"] = embedding_function
+        self._collection = self._client.get_or_create_collection(**options)
 
         # 如果知识库为空，导入默认文档
-        if self._collection.count() == 0:
+        if (load_default_docs and collection_name == self.COLLECTION_NAME
+                and self._collection.count() == 0):
             self._load_default_docs()
 
     # ── 文档管理 ──────────────────────────────────────────────────────────────
 
-    def add_documents(self, documents: List[Dict[str, str]]) -> int:
+    def add_documents(self, documents: List[Dict[str, Any]]) -> int:
         """
         批量导入文档到知识库。
 
@@ -79,25 +96,38 @@ class KnowledgeBase:
         长文档会自动切片（每片 500 字）。
         """
         ids, docs, metas = [], [], []
+        stale_ids = []
         for doc in documents:
             title   = doc.get("title", "")
             content = doc.get("content", "")
             chunks  = self._chunk_text(content, chunk_size=500)
+            source_ref = doc.get("source_ref") or "legacy:" + hashlib.sha256(title.encode()).hexdigest()
+            document_id = doc.get("document_id") or hashlib.sha256(source_ref.encode()).hexdigest()
+            current_ids = [f"{document_id}:c{i:04d}" for i in range(len(chunks))]
+            existing = self._collection.get(where={"document_id": document_id}, include=[])
+            stale_ids.extend(item for item in existing["ids"] if item not in current_ids)
 
             for i, chunk in enumerate(chunks):
-                doc_id = hashlib.md5(f"{title}_{i}_{chunk[:50]}".encode()).hexdigest()
-                ids.append(doc_id)
+                ids.append(current_ids[i])
                 docs.append(chunk)
-                metas.append({"title": title, "chunk_index": i, "total_chunks": len(chunks)})
+                metadata = {"evidence_category": "knowledge", "source_type": "runbook"}
+                metadata.update(doc.get("metadata", {}))
+                metadata.update({"title": title, "document_id": document_id,
+                                 "source_ref": source_ref, "chunk_index": i,
+                                 "total_chunks": len(chunks),
+                                 "content_hash": hashlib.sha256(chunk.encode()).hexdigest()})
+                metas.append(metadata)
 
         if ids:
             # ChromaDB 会自动生成 Embedding
-            self._collection.add(ids=ids, documents=docs, metadatas=metas)#ChromaDB 会自动给文档生成 embedding
+            self._collection.upsert(ids=ids, documents=docs, metadatas=metas)
             logger.info(f"知识库导入 {len(ids)} 个文档片段")
+        if stale_ids:
+            self._collection.delete(ids=stale_ids)
 
         return len(ids)
 
-    async def add_documents_async(self, documents: List[Dict[str, str]]) -> int:
+    async def add_documents_async(self, documents: List[Dict[str, Any]]) -> int:
         """异步导入文档；ChromaDB 客户端为同步实现，因此放入线程池执行。"""
         return await asyncio.to_thread(self.add_documents, documents)
 
@@ -107,19 +137,32 @@ class KnowledgeBase:
 
         ChromaDB 内部自动将 query 转为向量，与存储的文档向量做余弦相似度匹配。
         """
+        count = self._collection.count()
+        if not query.strip() or count == 0:
+            return []
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 100:
+            raise ValueError("top_k must be an integer between 1 and 100")
         results = self._collection.query(
             query_texts=[query],
-            n_results=top_k,
+            n_results=min(top_k, count),
         )
 
         items = []
         if results["documents"] and results["documents"][0]:
-            for doc, meta, dist in zip(
+            for chunk_id, doc, meta, dist in zip(
+                results["ids"][0],
                 results["documents"][0],
                 results["metadatas"][0],
                 results["distances"][0],
             ):
+                if self.max_distance is not None and dist > self.max_distance:
+                    continue
                 items.append({
+                    "document_id": meta.get("document_id", chunk_id),
+                    "chunk_id": chunk_id,
+                    "source_ref": meta.get("source_ref", ""),
+                    "collection": self.collection_name,
+                    "metadata": meta,
                     "title":    meta.get("title", ""),
                     "content":  doc,
                     "score":    round(1.0 - dist, 4),  # ChromaDB 返回距离，转为相似度
@@ -157,6 +200,31 @@ class KnowledgeBase:
         return await self.search_async(query, top_k=top_k)
 
     # ── 内部方法 ──────────────────────────────────────────────────────────────
+
+    def load_rootlens_documents(self, root=None) -> int:
+        if self.collection_name == self.COLLECTION_NAME:
+            raise ValueError("RootLens documents require an independent collection")
+        root = Path(root or Path(__file__).resolve().parents[1] / "knowledge" / "rootlens").resolve()
+        with (root / "manifest.json").open(encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        if len({entry["document_id"] for entry in manifest}) != len(manifest):
+            raise ValueError("knowledge manifest contains duplicate document IDs")
+        documents = []
+        for entry in manifest:
+            path = (root / entry["file"]).resolve(strict=True)
+            if path.parent != root or path.suffix != ".md":
+                raise ValueError("knowledge source must be a Markdown file inside the knowledge root")
+            if entry["source_type"] not in {"runbook", "historical_incident"}:
+                raise ValueError("invalid knowledge source type")
+            documents.append({
+                "document_id": entry["document_id"], "title": entry["title"],
+                "source_ref": f"knowledge/rootlens/{path.name}",
+                "content": path.read_text(encoding="utf-8"),
+                "metadata": {"evidence_category": "knowledge",
+                             "source_type": entry["source_type"], "service_name": entry["service_name"],
+                             "published_at": entry["published_at"], "simulated": True},
+            })
+        return self.add_documents(documents)
 
     def _chunk_text(self, text: str, chunk_size: int = 500) -> List[str]:
         """将长文本按 chunk_size 切片，保留语义完整性（按句号/换行切分）。"""
