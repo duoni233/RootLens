@@ -33,7 +33,7 @@ import pathlib
 import sys
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 
 _ROOT = str(pathlib.Path(__file__).parent.parent.resolve())
@@ -45,7 +45,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 load_dotenv()
 
@@ -75,6 +75,7 @@ _tool_manager = None
 _monitor      = None
 _evaluator    = None
 _skill_manager = None
+_diagnosis_pipeline = None
 #专门负责“读配置”，获得dict形式的配置包
 #把这些值整理成一个配置包
 # cfg 是这个配置包
@@ -95,7 +96,7 @@ def _anthropic_cfg() -> Dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _skill_manager#我要修改外面的全局变量，需要做的是给none的东西赋值
+    global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _skill_manager, _diagnosis_pipeline#我要修改外面的全局变量，需要做的是给none的东西赋值
 
     print(BANNER, flush=True)
 
@@ -108,6 +109,8 @@ async def lifespan(app: FastAPI):
     from monitor.performance_monitor import PerformanceMonitor
     from core.skill_loader import SkillManager
     from core.rootlens_config import memory_options, knowledge_collection
+    from core.diagnosis_pipeline import DiagnosisPipeline
+    from mcp.incident_tools import IncidentTools
 
     cfg = _anthropic_cfg()
     logger.info(f"模型: {cfg['model']}  base_url: {cfg.get('base_url', '(官方)')}")
@@ -200,6 +203,16 @@ async def lifespan(app: FastAPI):
         fallback=knowledge_fallback,#出错时走降级函数
     ))
 
+    incident_tools = IncidentTools()
+    incident_tools.register(_tool_manager)
+    _diagnosis_pipeline = DiagnosisPipeline(
+        orchestrator=_orchestrator, tool_manager=_tool_manager,
+        knowledge_lookup=_retrieve_knowledge_context,
+        dataset_id=incident_tools.manifest.dataset_id,
+        dataset_version=incident_tools.manifest.dataset_version,
+        timezone=incident_tools.manifest.timezone,
+    )
+
     # 性能监控（可选启动 Prometheus）
     prom_port = int(os.getenv("PROMETHEUS_PORT", "0")) or None
     _monitor = PerformanceMonitor(
@@ -254,6 +267,8 @@ class ChatRequest(BaseModel):
     message:     str
     user_id:     str = "anonymous"
     conv_id:     Optional[str] = None#这个值可以是某种类型，也可以是 None
+    environment: Optional[Literal["demo", "staging", "prod"]] = None
+    anchor_time: Optional[AwareDatetime] = None
 
 
 class ChatResponse(BaseModel):
@@ -282,6 +297,14 @@ class ChatResponse(BaseModel):
     entities: Dict[str, List[str]] = Field(default_factory=dict)#每次创建 ChatResponse 时，都新建一个空字典
     intent_confidence: float = 0.0
     intent_source_scores: Dict[str, float] = Field(default_factory=dict)
+    evidence_ids: List[str] = Field(default_factory=list)
+    tool_status: Dict[str, str] = Field(default_factory=dict)
+    tool_errors: Dict[str, str] = Field(default_factory=dict)
+    query_context: Optional[Dict[str, Any]] = None
+    rag_stage_status: Dict[str, str] = Field(default_factory=dict)
+    evidence_entities: Dict[str, List[str]] = Field(default_factory=dict)
+    routing_signal_sources: Dict[str, List[str]] = Field(default_factory=dict)
+    clarification_required: bool = False
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
@@ -320,10 +343,9 @@ async def chat(req: ChatRequest):#我要把用户 POST 过来的 JSON 请求体�
     主对话接口。完整流程：
     记忆读取 → 意图识别 → Agent 路由 → 执行 → 记忆写入
     """
-    if _orchestrator is None or _memory is None:
+    if _orchestrator is None or _memory is None or _diagnosis_pipeline is None:
         raise HTTPException(503, "服务未就绪")
 
-    from agents.agent_orchestrator import Request as OrcReq
     from memory.conversation_memory import MsgRole
 
     conv_id = req.conv_id or str(uuid.uuid4())
@@ -338,29 +360,14 @@ async def chat(req: ChatRequest):#我要把用户 POST 过来的 JSON 请求体�
     ] if mem_ctx.recent_messages else None
 
     intent_result = await _orchestrator.recognize_intent(req.message, history=history)
-    #判断是否需要rag,返回的knowledge_text = 查到的知识库文本
-    #knowledge_used = 有没有真的用知识库
-    knowledge_text, knowledge_used = await _build_knowledge_context(req.message, intent=intent_result.intent)
-    context_parts = [mem_ctx.to_prompt_text()]
-    if knowledge_text:
-        context_parts.append(knowledge_text)
-    full_context = "\n\n".join(part for part in context_parts if part)
-
-    orch_req = OrcReq(
-        message=req.message,
-        user_id=req.user_id,
-        conv_id=conv_id,
-        context=full_context,
-        history=history,
-        entities=intent_result.entities,
-        intent=intent_result.intent,
-        intent_group=intent_result.intent_group,
-        urgency=intent_result.urgency,
-        intent_confidence=intent_result.confidence,
+    outcome = await _diagnosis_pipeline.run(
+        message=req.message, user_id=req.user_id, conv_id=conv_id,
+        memory_context=mem_ctx.to_prompt_text(), history=history,
+        intent_result=intent_result, environment=req.environment,
+        anchor_time=req.anchor_time,
     )
-
-    # 3. 执行
-    result = await _orchestrator.run(orch_req)
+    result = outcome.result
+    bundle = outcome.bundle
 
     # 4. 写入记忆
     await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
@@ -377,16 +384,26 @@ async def chat(req: ChatRequest):#我要把用户 POST 过来的 JSON 请求体�
         intent_group=intent_result.intent_group,
         agent_type=result.agent_type.value,
         agent_types=[agent_type.value for agent_type in result.agent_types],
-        primary_agent=result.primary_agent.value if result.primary_agent else result.agent_type.value,
+        primary_agent=(result.primary_agent.value if result.primary_agent else
+                       "" if outcome.clarification_required else result.agent_type.value),
         supporting_agents=[agent_type.value for agent_type in result.supporting_agents],
         routing_reason=result.routing_reason,
         routing_confidence=result.routing_confidence,
         escalated=result.escalated,
         latency_ms=round(result.latency_ms, 1),
-        knowledge_used=knowledge_used,
+        knowledge_used=outcome.knowledge.used,
         entities=intent_result.entities,
         intent_confidence=round(intent_result.confidence, 4),
         intent_source_scores=intent_result.source_scores,
+        evidence_ids=[item.evidence_id for item in bundle.evidence] if bundle else [],
+        tool_status={name: state.status for name, state in bundle.tool_status.items()} if bundle else {},
+        tool_errors={name: state.error for name, state in bundle.tool_status.items()
+                     if state.error} if bundle else {},
+        query_context=bundle.query_context.model_dump(mode="json") if bundle else None,
+        rag_stage_status=outcome.knowledge.stages,
+        evidence_entities=outcome.signals.entities,
+        routing_signal_sources=outcome.signals.evidence_ids,
+        clarification_required=outcome.clarification_required,
     )
 
 
@@ -396,14 +413,22 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
 
     这里复用 MCPToolManager 的查询改写、并行召回、重排、fallback 能力。
     """
-    if _tool_manager is None:
-        return "", False
     if not _should_use_knowledge(message, intent=intent):
         return "", False
+    knowledge = await _retrieve_knowledge_context(message, top_k=top_k)
+    return knowledge.text, knowledge.used
+
+
+async def _retrieve_knowledge_context(message: str, top_k: int = 3):
+    from core.diagnosis_pipeline import KnowledgeResult
+    if _tool_manager is None:
+        return KnowledgeResult(stages={"rewrite": "skipped", "retrieval": "failed", "rerank": "skipped"})
     try:
         result = await _tool_manager.search_with_rewrite("knowledge_search", message, top_k=top_k)
-        if not result.success or result.error or not isinstance(result.data, list) or not result.data:#isinstanced的作用是判断result.data 是不是 list 类型
-            return "", False
+        stages = {"rewrite": result.rewrite_status, "retrieval": result.retrieval_status,
+                  "rerank": result.rerank_status}
+        if not result.success or not isinstance(result.data, list) or not result.data:
+            return KnowledgeResult(stages=stages)
 
         parts = ["[知识库检索结果]"]
         used = False
@@ -420,12 +445,12 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
             parts.append(f"{i}. 标题: {title}\n   来源: {item['source_ref']} ({item['chunk_id']})\n   相关度: {score}\n   内容: {content[:600]}")
 
         if not used:
-            return "", False
+            return KnowledgeResult(stages=stages)
         parts.append("以上是处置规则或历史经验，不是本次现场事实；知识不足时明确说明，不推断唯一根因。")
-        return "\n".join(parts), True
+        return KnowledgeResult(text="\n".join(parts), used=True, stages=stages)
     except Exception as ex:
         logger.warning(f"构建知识库上下文失败: {ex}")
-        return "", False
+        return KnowledgeResult(stages={"rewrite": "failed", "retrieval": "failed", "rerank": "skipped"})
 
 
 def _should_use_knowledge(message: str, intent=None) -> bool:#intent: Optional[str] = None,intent 这个参数，类型可以是 str，也可以是 None。如果调用函数时不传 intent，它默认就是 None。

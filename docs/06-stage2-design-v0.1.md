@@ -1,6 +1,6 @@
 # RootLens Stage 2 Design v0.1
 
-日期：2026-09-28；评审通过：2026-09-29。状态：第 1、2 批独立能力已实现并测试，主链衔接与部署仍为计划。
+日期：2026-09-28；评审通过：2026-09-29。状态：第 1、2 批独立能力和第 3 批主链衔接已完成确定性测试；部署与真实 LLM 联调仍为计划。第 3 批实际结果见 `09-stage2-batch3-acceptance.md`。
 
 目标：Evidence Acquisition + Evidence-aware Routing，即先取得现场事实，再完成一次主辅 Agent 路由。
 

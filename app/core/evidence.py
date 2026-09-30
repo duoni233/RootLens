@@ -1,8 +1,9 @@
 """Operational evidence contracts; no routing or LLM decisions live here."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from enum import Enum
+import re
 from typing import Annotated, Literal, Optional, Union
 from zoneinfo import ZoneInfo
 
@@ -219,3 +220,60 @@ def within_window(record: OperationalRecord, window: TimeWindow) -> bool:
         return (window.start_time <= record.time_range.start_time
                 and record.time_range.end_time <= window.end_time)
     return window.start_time <= record.observed_at <= window.end_time
+
+
+DEMO_DATE = date(2026, 9, 1)
+
+
+def build_query_context(*, entities: dict, environment: Optional[str] = None,
+                        anchor_time: Optional[datetime] = None,
+                        dataset_id: str = "rootlens-demo", dataset_version: str = "v1",
+                        timezone: str = "Asia/Shanghai",
+                        message: str = "") -> tuple[Optional[QueryContext], Optional[str]]:
+    """Resolve only explicit conditions, except the visible date assumption in demo."""
+    services = list(dict.fromkeys(entities.get("service_name") or []))
+    if len(services) != 1:
+        return None, "请提供一个受影响的服务名，例如 payment-service。"
+    env_in_text = re.findall(r"(?<![\w-])(demo|prod|staging)(?![\w-])", message, re.I)
+    if len({value.lower() for value in env_in_text}) > 1 or (
+        environment and env_in_text and environment.lower() != env_in_text[0].lower()
+    ):
+        return None, "请求中的环境条件不一致，请确认是 demo、staging 还是 prod。"
+    env = (environment or (env_in_text[0] if env_in_text else "demo")).lower()
+    assumptions = [] if environment or env_in_text else ["未指定环境，使用显式模拟环境 demo"]
+    times = list(dict.fromkeys(entities.get("start_time") or []))
+    dates = list(dict.fromkeys(entities.get("date") or []))
+    if len(times) > 1 or len(dates) > 1:
+        return None, "出现多个故障时间，请确认本次需要查询的时间。"
+    try:
+        event_time = time(*(int(part) for part in times[0].split(":"))) if times else None
+        day = None
+        if dates:
+            match = re.fullmatch(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", dates[0])
+            if match is None:
+                raise ValueError("unsupported date")
+            day = date(*(int(part) for part in match.groups()))
+    except ValueError:
+        return None, "故障发生时间格式无效，请使用完整日期和 HH:MM。"
+    if anchor_time is not None:
+        if anchor_time.tzinfo is None or anchor_time.utcoffset() is None:
+            return None, "请提供带时区的完整发生时间。"
+        anchor = anchor_time
+        local = anchor.astimezone(ZoneInfo(timezone))
+        if (event_time and local.time().replace(tzinfo=None).replace(second=0, microsecond=0) != event_time
+                or day and local.date() != day):
+            return None, "请求时间与消息中的故障时间不一致，请确认本次发生时间。"
+    else:
+        if event_time is None:
+            return None, "请提供明确的故障发生时间，例如 2026-09-01 10:05。"
+        if day is None and env == "demo":
+            day = DEMO_DATE
+            assumptions.append("未提供日期，demo 数据使用 2026-09-01 Asia/Shanghai")
+        if day is None:
+            return None, "非 demo 环境需要提供完整日期和时间，不会猜测日期。"
+        anchor = datetime.combine(day, event_time, tzinfo=ZoneInfo(timezone))
+    return QueryContext.build(
+        service_name=services[0], environment=env, anchor_time=anchor,
+        timezone=timezone, dataset_id=dataset_id, dataset_version=dataset_version,
+        assumptions=assumptions,
+    ), None
