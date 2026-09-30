@@ -1,0 +1,87 @@
+[
+  {
+    "case_id": "INC-001",
+    "message": "payment-service 从 10:05 开始 5xx 激增，刚发布 v2.3.7，帮我判断原因",
+    "environment": "demo",
+    "anchor_time": "2026-09-01T10:05:00+08:00",
+    "expected": {
+      "intent": "service_incident",
+      "primary_agent": "application",
+      "supporting_agents": ["database"],
+      "evidence_ids": ["rootlens-demo:v1:INC-001:log:L001", "rootlens-demo:v1:INC-001:metric:M002", "rootlens-demo:v1:INC-001:metric:M003", "rootlens-demo:v1:INC-001:deployment:D001"],
+      "evidence_types": ["log", "metric", "deployment"],
+      "tool_status": {"query_logs": "ok", "query_metrics": "ok", "query_deployments": "ok"},
+      "runbook_ids": ["RL-RB-DB-001"],
+      "diagnosis_points": ["DB pool exhaustion is supported by operational evidence", "deployment timing alone does not prove causation"],
+      "forbidden_claims": ["发布确定导致", "deployment definitely caused"],
+      "clarification_required": false
+    }
+  },
+  {
+    "case_id": "INC-002",
+    "message": "checkout-service 11:10 开始 5xx 激增，帮我排查",
+    "environment": "demo",
+    "anchor_time": "2026-09-01T11:10:00+08:00",
+    "expected": {
+      "intent": "service_incident",
+      "primary_agent": "application",
+      "supporting_agents": [],
+      "evidence_ids": ["rootlens-demo:v1:INC-002:log:L201", "rootlens-demo:v1:INC-002:metric:M201"],
+      "evidence_types": ["log", "metric"],
+      "tool_status": {"query_logs": "ok", "query_metrics": "ok", "query_deployments": "empty"},
+      "runbook_ids": ["RL-RB-APP-001"],
+      "diagnosis_points": ["application HTTP 5xx is observed", "no database failure evidence is available"],
+      "clarification_required": false
+    }
+  },
+  {
+    "case_id": "INC-003",
+    "message": "inventory-service 12:15 CPU 95%，请求变慢，帮我排查资源异常",
+    "environment": "demo",
+    "anchor_time": "2026-09-01T12:15:00+08:00",
+    "expected": {
+      "intent": "resource_issue",
+      "primary_agent": "infrastructure",
+      "supporting_agents": [],
+      "evidence_ids": ["rootlens-demo:v1:INC-003:log:L301", "rootlens-demo:v1:INC-003:metric:M301"],
+      "evidence_types": ["log", "metric"],
+      "tool_status": {"query_logs": "ok", "query_metrics": "ok", "query_deployments": "empty"},
+      "diagnosis_points": ["CPU saturation is supported by operational evidence"],
+      "clarification_required": false
+    }
+  },
+  {
+    "case_id": "runbook-db-pool",
+    "message": "如何处理 DBConnectionError 连接池耗尽？请查 Runbook",
+    "expected": {
+      "intent": "runbook_query",
+      "tool_status": {},
+      "runbook_ids": ["RL-RB-DB-001"],
+      "clarification_required": false
+    }
+  },
+  {
+    "case_id": "clarify-missing-service",
+    "message": "10:05 开始 5xx 激增，请帮我排查",
+    "expected": {
+      "intent": "service_incident",
+      "clarification_required": true,
+      "tool_status": {}
+    }
+  },
+  {
+    "case_id": "INC-004-partial",
+    "message": "shipping-service 13:05 开始 5xx 升高，帮我排查",
+    "environment": "demo",
+    "anchor_time": "2026-09-01T13:05:00+08:00",
+    "expected": {
+      "intent": "service_incident",
+      "primary_agent": "application",
+      "supporting_agents": [],
+      "evidence_ids": ["rootlens-demo:v1:INC-004:metric:M401"],
+      "evidence_types": ["metric"],
+      "tool_status": {"query_logs": "empty", "query_metrics": "ok", "query_deployments": "empty"},
+      "clarification_required": false
+    }
+  }
+]

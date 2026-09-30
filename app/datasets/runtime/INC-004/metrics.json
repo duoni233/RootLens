@@ -1,0 +1,3 @@
+[
+  {"record_id":"M401","source_type":"metric","service_name":"shipping-service","environment":"demo","observed_at":"2026-09-01T13:06:00+08:00","time_range":{"start_time":"2026-09-01T13:05:00+08:00","end_time":"2026-09-01T13:06:00+08:00"},"summary":"Shipping HTTP 5xx rate reached 12 percent; log source has no records","attributes":{"metric_name":"http_5xx_rate","value":12.0,"unit":"percent","aggregation":"rate over 1 minute"}}
+]

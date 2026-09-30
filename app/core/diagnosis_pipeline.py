@@ -24,12 +24,20 @@ EVIDENCE_TOOLS = ("query_logs", "query_metrics", "query_deployments")
 
 
 @dataclass
+class KnowledgeSource:
+    document_id: str
+    chunk_id: str
+    source_ref: str
+
+
+@dataclass
 class KnowledgeResult:
     text: str = ""
     used: bool = False
     stages: dict[str, str] = field(default_factory=lambda: {
         "rewrite": "skipped", "retrieval": "skipped", "rerank": "skipped",
     })
+    sources: list[KnowledgeSource] = field(default_factory=list)
 
 
 @dataclass

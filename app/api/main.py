@@ -420,7 +420,7 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
 
 
 async def _retrieve_knowledge_context(message: str, top_k: int = 3):
-    from core.diagnosis_pipeline import KnowledgeResult
+    from core.diagnosis_pipeline import KnowledgeResult, KnowledgeSource
     if _tool_manager is None:
         return KnowledgeResult(stages={"rewrite": "skipped", "retrieval": "failed", "rerank": "skipped"})
     try:
@@ -432,6 +432,7 @@ async def _retrieve_knowledge_context(message: str, top_k: int = 3):
 
         parts = ["[知识库检索结果]"]
         used = False
+        sources = []
         for i, item in enumerate(result.data[:top_k], start=1):
             if (not isinstance(item, dict) or item.get("fallback")
                     or not item.get("chunk_id") or not item.get("source_ref")):
@@ -443,11 +444,18 @@ async def _retrieve_knowledge_context(message: str, top_k: int = 3):
                 continue
             used = True
             parts.append(f"{i}. 标题: {title}\n   来源: {item['source_ref']} ({item['chunk_id']})\n   相关度: {score}\n   内容: {content[:600]}")
+            if item.get("document_id"):
+                sources.append(KnowledgeSource(
+                    document_id=str(item["document_id"]),
+                    chunk_id=str(item["chunk_id"]),
+                    source_ref=str(item["source_ref"]),
+                ))
 
         if not used:
             return KnowledgeResult(stages=stages)
         parts.append("以上是处置规则或历史经验，不是本次现场事实；知识不足时明确说明，不推断唯一根因。")
-        return KnowledgeResult(text="\n".join(parts), used=True, stages=stages)
+        return KnowledgeResult(text="\n".join(parts), used=True, stages=stages,
+                               sources=sources)
     except Exception as ex:
         logger.warning(f"构建知识库上下文失败: {ex}")
         return KnowledgeResult(stages={"rewrite": "failed", "retrieval": "failed", "rerank": "skipped"})
