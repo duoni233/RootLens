@@ -12,6 +12,8 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 
 2026-09-30：第 3 批共用 DiagnosisPipeline 接通取证、增强检索、一次主辅路由与 /chat；114 项测试通过（原 94 + 新 20），包含真实 Chroma 测试集合和临时 Redis。当前运行容器仍是旧版本，未做真实 LLM 验收。详见 `09-stage2-batch3-acceptance.md`。
 
+2026-09-30：第 4 批重建 RootLens Docker 并完成真实 LLM `/chat` 联调。短请求通过三路工具取得 9 条证据，RootLens RAG 改写/召回/重排均实际执行，Application 主、Database 辅；补齐证据驱动的 Database Skill 注入。缺条件澄清与 Runbook 不取证均通过。全量回归 115 项通过；原 EchoMind 容器未动。注意 `/eval/run` 尚未接入新管线，模拟数据不代表生产根因准确率。详见 `10-stage2-batch4-live-integration.md`。
+
 ## 已完成
 
 | 模块 | 原版 EchoMind | RootLens 当前实现 | 验证 |
@@ -41,8 +43,8 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 ## 未完成
 
 1. 真实 LLM 下的 RAG 改写/重排需再次联调；确定性兼容测试已通过，但不能替代真实模型验收。当前意图兼容接口配置仍禁用 Embedding，实际启用 LLM 与 Pattern 两路。
-2. 新管线已在源码和确定性 HTTP 测试接入 /chat，但部署生效与真实模型表现待验收；现有运行容器仍使用旧镜像。
+2. 新管线已部署并完成本地真实 HTTP/LLM 冒烟验收；生产数据源接入、大规模回归评测和根因准确率仍未验证。
 3. 结构化 IncidentDiagnosis、执行 Trace、统一评测集和故障注入。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
 
-下一步：第 4 批 Docker 构建与真实完整 /chat 验收。当前没有完成整个 Stage 2。
+下一步：把统一评测案例接入新管线，并明确结构化诊断结果与证据引用校验；不要把旧 `/eval/run` 的结果当成新管线质量指标。

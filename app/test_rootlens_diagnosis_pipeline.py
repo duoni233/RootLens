@@ -103,6 +103,21 @@ def test_short_report_acquires_evidence_and_routes_once(setup_pipeline):
     assert "发布先于故障不等于发布是根因" in requests[0][0].evidence_context
 
 
+def test_evidence_derived_code_activates_supporting_agent_skill(setup_pipeline):
+    from core.skill_loader import SkillManager
+
+    pipeline, _, orchestrator, requests, _ = setup_pipeline
+    manager = SkillManager(root_dir=str(Path(__file__).parent / "skills"))
+    manager.load()
+    orchestrator.set_skill_manager(manager)
+    outcome = run(pipeline)
+    database_request = next(req for req, agent in requests if agent == AgentType.DATABASE)
+    prompt = orchestrator._pool[AgentType.DATABASE][0]._build_system_prompt(database_request)
+    assert "数据库故障诊断" in prompt
+    assert outcome.result.supporting_agents == [AgentType.DATABASE]
+    assert database_request.message == MESSAGE
+
+
 def test_full_stage_one_request_still_routes_to_application_and_database(setup_pipeline):
     pipeline, _, _, _, _ = setup_pipeline
     from core.intent_recognizer import IntentRecognizer
