@@ -1,6 +1,6 @@
 # RootLens 进度记录
 
-更新日期：2026-09-30
+更新日期：2026-10-01
 
 ## 一句话
 
@@ -14,6 +14,8 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 
 2026-09-30：第 4 批重建 RootLens Docker 并完成真实 LLM `/chat` 联调。短请求通过三路工具取得 9 条证据，RootLens RAG 改写/召回/重排均实际执行，Application 主、Database 辅；补齐证据驱动的 Database Skill 注入。缺条件澄清与 Runbook 不取证均通过。全量回归 115 项通过；原 EchoMind 容器未动。注意 `/eval/run` 尚未接入新管线，模拟数据不代表生产根因准确率。详见 `10-stage2-batch4-live-integration.md`。
 
+2026-10-01：**Stage 3 已完成并关闭。** `/eval/run` 现与 `/chat` 共用 Intent Recognition + DiagnosisPipeline；六案例真实评测经人工审阅后，显式批准 `stage3-v2` / Judge schema `2` 为首份 RootLens baseline。Approved ID 为 `9bd1b2a57d5b411f87541bdcba521af4`，history 快照保留；批准后复评 `compatible=true`、`regression.status=compared`，确定性比较项 delta 均为 0，Judge 比较项均为 stable。详见 `15-stage3-closure.md`。这是一套 **six-case synthetic regression suite**，不代表生产准确率；仍有已知 RAG extra-hit noise，Judge v2 尚未经大规模人工校准。
+
 ## 已完成
 
 | 模块 | 原版 EchoMind | RootLens 当前实现 | 验证 |
@@ -25,7 +27,7 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 | 澄清 | 追问订单、退款等信息 | 追问服务、时间、错误码/日志/指标 | 本地测试 |
 | P1 | CRITICAL 直接走升级分支 | 专业 Agent 保留诊断，结果标记 escalated | 本地测试 |
 
-入口仍是 `api/main.py` 的 `/chat`，但现在由共用 DiagnosisPipeline 串起 RootLens 取证、RAG 与路由。Memory 沿用第 2 批隔离配置；Monitor 和 Evaluation 仍主要是 EchoMind 原实现，尤其 `/eval/run` 尚未覆盖新管线。
+入口仍是 `api/main.py` 的 `/chat`，由共用 DiagnosisPipeline 串起 RootLens 取证、RAG 与路由。Memory 沿用第 2 批隔离配置；RootLens 默认 `/eval/run` 已复用相同核心诊断链并与 approved baseline 比较。Monitor 尚未作为 Stage 3 的改造目标。
 
 ## 本次固定验收
 
@@ -42,9 +44,9 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 
 ## 未完成
 
-1. 真实 LLM 下的 RAG 改写/重排需再次联调；确定性兼容测试已通过，但不能替代真实模型验收。当前意图兼容接口配置仍禁用 Embedding，实际启用 LLM 与 Pattern 两路。
-2. 新管线已部署并完成本地真实 HTTP/LLM 冒烟验收；生产数据源接入、大规模回归评测和根因准确率仍未验证。
-3. 结构化 IncidentDiagnosis、执行 Trace、统一评测集和故障注入。
+1. 生产数据源接入、大规模回归评测和根因准确率仍未验证；当前六案例均为一致性模拟数据。
+2. RAG 仍有与当前故障不直接相关的额外 Runbook 命中；Judge v2 未经大规模人工校准。当前意图兼容接口配置仍禁用 Embedding，实际启用 LLM 与 Pattern 两路。
+3. 结构化 IncidentDiagnosis、执行 Trace 和故障注入尚未实施；统一评测集及首份 approved baseline 已完成。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
 
-下一步：把统一评测案例接入新管线，并明确结构化诊断结果与证据引用校验；不要把旧 `/eval/run` 的结果当成新管线质量指标。
+Stage 4 尚未开始，等待单独确认范围。
