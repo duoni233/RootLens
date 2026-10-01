@@ -200,7 +200,8 @@ def test_structured_knowledge_sources_are_not_parsed_from_prompt(monkeypatch):
 
     item = {"document_id": "RL-RB-DB-001", "chunk_id": "RL-RB-DB-001:c0000",
             "source_ref": "knowledge/rootlens/db-connection-pool.md",
-            "title": "DB pool runbook", "content": "Check pool saturation"}
+            "title": "DB pool runbook", "content": "Check pool saturation",
+            "metadata": None}
     fake = SimpleNamespace(search_with_rewrite=AsyncMock(return_value=ToolResult(
         success=True, data=[item], tool_name="knowledge_search",
         rewrite_status="skipped", retrieval_status="performed", rerank_status="skipped")))

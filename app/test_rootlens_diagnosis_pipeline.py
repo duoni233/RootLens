@@ -312,6 +312,7 @@ def test_evidence_query_reaches_rootlens_collection(setup_pipeline, tmp_path, mo
     assert outcome.knowledge.used
     assert "db-connection-pool.md" in outcome.knowledge.text
     assert any(source.document_id == "RL-RB-DB-001" and
+               source.source_type == "runbook" and
                source.source_ref.endswith("db-connection-pool.md")
                for source in outcome.knowledge.sources)
     assert outcome.knowledge.stages == {"rewrite": "skipped", "retrieval": "performed",

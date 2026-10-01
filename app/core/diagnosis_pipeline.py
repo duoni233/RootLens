@@ -28,6 +28,7 @@ class KnowledgeSource:
     document_id: str
     chunk_id: str
     source_ref: str
+    source_type: str = ""
 
 
 @dataclass

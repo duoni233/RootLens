@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -73,12 +74,16 @@ class EvaluationObservation(BaseModel):
     evidence_types: Optional[list[str]] = None
     tool_status: Optional[dict[str, ToolStatus]] = None
     runbook_ids: Optional[list[str]] = None
+    knowledge_document_ids: Optional[list[str]] = None
     clarification_required: Optional[bool] = None
     response: Optional[str] = None
+    rag_stage_status: dict[str, str] = Field(default_factory=dict)
 
 
-def load_rootlens_cases(path: Path = DEFAULT_CASES) -> list[EvaluationCase]:
-    with Path(path).open(encoding="utf-8") as stream:
+def load_rootlens_cases(path: Optional[Path] = None) -> list[EvaluationCase]:
+    source = Path(path) if path is not None else Path(
+        os.getenv("ROOTLENS_EVAL_CASES_PATH", str(DEFAULT_CASES)))
+    with source.open(encoding="utf-8") as stream:
         cases = [EvaluationCase.model_validate(item) for item in json.load(stream)]
     ids = [case.case_id for case in cases]
     if len(ids) != len(set(ids)):

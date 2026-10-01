@@ -87,10 +87,12 @@ services:
       - CHROMA_PORT=8000
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma
       - EVAL_BASELINE_PATH=/app/data/eval/baseline.json
+      - ROOTLENS_EVAL_CASES_PATH=/eval-data/stage3-v1.json
       - ECHOMIND_SKILLS_DIR=/app/skills
     volumes:
       - ./data/chroma:/app/data/chroma
       - ./data/eval:/app/data/eval
+      - ./datasets/evaluation/stage3-v1.json:/eval-data/stage3-v1.json:ro
       - ./skills:/app/skills
       - ./logs:/app/logs
     depends_on:

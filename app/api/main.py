@@ -46,6 +46,7 @@ from fastapi import FastAPI, HTTPException, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import AwareDatetime, BaseModel, Field
+from evaluation.rootlens_cases import EvaluationCase, load_rootlens_cases
 
 load_dotenv()
 
@@ -74,6 +75,7 @@ _memory       = None
 _tool_manager = None
 _monitor      = None
 _evaluator    = None
+_rootlens_evaluator = None
 _skill_manager = None
 _diagnosis_pipeline = None
 #专门负责“读配置”，获得dict形式的配置包
@@ -96,7 +98,7 @@ def _anthropic_cfg() -> Dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _skill_manager, _diagnosis_pipeline#我要修改外面的全局变量，需要做的是给none的东西赋值
+    global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _rootlens_evaluator, _skill_manager, _diagnosis_pipeline#我要修改外面的全局变量，需要做的是给none的东西赋值
 
     print(BANNER, flush=True)
 
@@ -110,6 +112,7 @@ async def lifespan(app: FastAPI):
     from core.skill_loader import SkillManager
     from core.rootlens_config import memory_options, knowledge_collection
     from core.diagnosis_pipeline import DiagnosisPipeline
+    from evaluation.rootlens_evaluator import RootLensEvaluator
     from mcp.incident_tools import IncidentTools
 
     cfg = _anthropic_cfg()
@@ -211,6 +214,9 @@ async def lifespan(app: FastAPI):
         dataset_id=incident_tools.manifest.dataset_id,
         dataset_version=incident_tools.manifest.dataset_version,
         timezone=incident_tools.manifest.timezone,
+    )
+    _rootlens_evaluator = RootLensEvaluator(
+        orchestrator=_orchestrator, pipeline=_diagnosis_pipeline,
     )
 
     # 性能监控（可选启动 Prometheus）
@@ -359,13 +365,14 @@ async def chat(req: ChatRequest):#我要把用户 POST 过来的 JSON 请求体�
         for m in mem_ctx.recent_messages[-5:]
     ] if mem_ctx.recent_messages else None
 
-    intent_result = await _orchestrator.recognize_intent(req.message, history=history)
-    outcome = await _diagnosis_pipeline.run(
+    from core.diagnosis_entry import run_diagnosis
+    diagnosis = await run_diagnosis(
+        orchestrator=_orchestrator, pipeline=_diagnosis_pipeline,
         message=req.message, user_id=req.user_id, conv_id=conv_id,
         memory_context=mem_ctx.to_prompt_text(), history=history,
-        intent_result=intent_result, environment=req.environment,
-        anchor_time=req.anchor_time,
+        environment=req.environment, anchor_time=req.anchor_time,
     )
+    intent_result, outcome = diagnosis.intent, diagnosis.outcome
     result = outcome.result
     bundle = outcome.bundle
 
@@ -445,10 +452,13 @@ async def _retrieve_knowledge_context(message: str, top_k: int = 3):
             used = True
             parts.append(f"{i}. 标题: {title}\n   来源: {item['source_ref']} ({item['chunk_id']})\n   相关度: {score}\n   内容: {content[:600]}")
             if item.get("document_id"):
+                metadata = item.get("metadata")
                 sources.append(KnowledgeSource(
                     document_id=str(item["document_id"]),
                     chunk_id=str(item["chunk_id"]),
                     source_ref=str(item["source_ref"]),
+                    source_type=str(metadata.get("source_type", ""))
+                    if isinstance(metadata, dict) else "",
                 ))
 
         if not used:
@@ -542,7 +552,9 @@ class EvalDialogInput(BaseModel):
 
 
 class EvalRunInput(BaseModel):
-    """评测请求。为空时使用内置默认用例。"""
+    """RootLens 默认评测；旧客服评测仅在 mode=legacy 时运行。"""
+    mode: Literal["rootlens", "legacy"] = "rootlens"
+    cases: Optional[List[EvaluationCase]] = None
     intent_cases: Optional[List[EvalIntentInput]] = None
     dialog_cases: Optional[List[EvalDialogInput]] = None
 
@@ -630,7 +642,23 @@ async def knowledge_stats():
 
 @app.post("/eval/run")
 async def run_eval(body: Optional[EvalRunInput] = None):
-    """运行内置评测用例，返回评测报告。"""
+    """默认评测 RootLens 诊断链；显式 legacy 才运行旧客服评测。"""
+    if body is None or body.mode == "rootlens":
+        if _rootlens_evaluator is None:
+            raise HTTPException(503, "RootLens 评测未初始化")
+        if body and (body.intent_cases is not None or body.dialog_cases is not None):
+            raise HTTPException(400, "旧评测字段仅支持 mode=legacy")
+        try:
+            cases = body.cases if body and body.cases is not None else load_rootlens_cases()
+        except (OSError, ValueError) as ex:
+            logger.error("RootLens 评测集不可用: %s", ex)
+            raise HTTPException(503, "RootLens 评测集不可用") from ex
+        if not cases:
+            raise HTTPException(400, "评测案例不能为空")
+        return (await _rootlens_evaluator.run(cases)).to_dict()
+
+    if body.cases is not None:
+        raise HTTPException(400, "RootLens cases 不能传给 legacy 评测")
     if _evaluator is None:
         raise HTTPException(503, "服务未就绪")
     from evaluation.evaluator import DEFAULT_DIALOG_CASES, DEFAULT_INTENT_CASES, IntentTestCase
