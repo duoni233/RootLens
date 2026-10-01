@@ -9,6 +9,8 @@ from typing import Awaitable, Callable, Optional
 
 from agents.agent_orchestrator import AgentOrchestrator, AgentType, OrchestratorResult, Request
 from core.evidence import EvidenceBundle, QueryContext, build_query_context
+from core.diagnosis_assembler import DiagnosisAssembler
+from core.incident_diagnosis import DiagnosisBuildResult, DiagnosisBuildStatus
 from core.intent_recognizer import IntentCategory, IntentResult
 from core.rag_query import build_retrieval_query
 from core.routing_signals import RoutingSignals, extract_routing_signals
@@ -48,6 +50,8 @@ class DiagnosisOutcome:
     bundle: Optional[EvidenceBundle] = None
     signals: RoutingSignals = field(default_factory=RoutingSignals)
     clarification_required: bool = False
+    diagnosis_build_result: DiagnosisBuildResult = field(default_factory=lambda: DiagnosisBuildResult(
+        status=DiagnosisBuildStatus.NOT_RUN))
 
 
 def evidence_context(bundle: EvidenceBundle) -> str:
@@ -69,18 +73,21 @@ def evidence_context(bundle: EvidenceBundle) -> str:
 class DiagnosisPipeline:
     def __init__(self, *, orchestrator: AgentOrchestrator, tool_manager: MCPToolManager,
                  knowledge_lookup: Callable[[str], Awaitable[KnowledgeResult]],
-                 dataset_id: str, dataset_version: str, timezone: str):
+                 dataset_id: str, dataset_version: str, timezone: str,
+                 assembler: Optional[DiagnosisAssembler] = None):
         self.orchestrator = orchestrator
         self.tools = tool_manager
         self.knowledge_lookup = knowledge_lookup
         self.dataset_id = dataset_id
         self.dataset_version = dataset_version
         self.timezone = timezone
+        self.assembler = assembler
 
     async def run(self, *, message: str, user_id: str, conv_id: str,
                   memory_context: str, history: Optional[list[dict[str, str]]],
                   intent_result: IntentResult, environment: Optional[str] = None,
-                  anchor_time: Optional[datetime] = None) -> DiagnosisOutcome:
+                  anchor_time: Optional[datetime] = None,
+                  build_diagnosis: bool = True) -> DiagnosisOutcome:
         intent = intent_result.intent
         entities = intent_result.entities
         event_markers = ("5xx", "500", "异常", "故障", "超时", "告警", "error", "cpu", "内存")
@@ -93,7 +100,8 @@ class DiagnosisPipeline:
         )
         if intent == IntentCategory.ALERT_TRIAGE and not evidence_required:
             return self._clarify(
-                intent, "请补充受影响的服务、告警发生时间和具体现象，再进行现场取证。")
+                intent, "请补充受影响的服务、告警发生时间和具体现象，再进行现场取证。",
+                build_diagnosis=build_diagnosis)
         bundle = None
         signals = RoutingSignals()
         if evidence_required:
@@ -103,7 +111,7 @@ class DiagnosisPipeline:
                 timezone=self.timezone, message=message,
             )
             if clarification:
-                return self._clarify(intent, clarification)
+                return self._clarify(intent, clarification, build_diagnosis=build_diagnosis)
             assert query is not None
             bundle = await self._acquire(query)
             signals = extract_routing_signals(bundle)
@@ -127,15 +135,34 @@ class DiagnosisPipeline:
             routing_signal_sources=signals.evidence_ids,
         )
         result = await self.orchestrator.run(request)
-        return DiagnosisOutcome(result=result, knowledge=knowledge, bundle=bundle, signals=signals)
+        build_result = DiagnosisBuildResult(status=DiagnosisBuildStatus.NOT_RUN)
+        if build_diagnosis and self.assembler:
+            try:
+                if result.clarification_required:
+                    build_result = self.assembler.clarify(intent, result.response)
+                else:
+                    build_result = await self.assembler.build(
+                        message=message, intent_result=intent_result, result=result,
+                        bundle=bundle, knowledge=knowledge)
+            except Exception:
+                build_result = DiagnosisBuildResult(
+                    status=DiagnosisBuildStatus.ASSEMBLER_FAILED,
+                    error_code="unexpected_assembler_error")
+        return DiagnosisOutcome(result=result, knowledge=knowledge, bundle=bundle,
+                                signals=signals, diagnosis_build_result=build_result,
+                                clarification_required=result.clarification_required)
 
-    @staticmethod
-    def _clarify(intent: IntentCategory, message: str) -> DiagnosisOutcome:
+    def _clarify(self, intent: IntentCategory, message: str,
+                 *, build_diagnosis: bool = True) -> DiagnosisOutcome:
+        build_result = DiagnosisBuildResult(status=DiagnosisBuildStatus.NOT_RUN)
+        if build_diagnosis and self.assembler:
+            build_result = self.assembler.clarify(intent, message)
         return DiagnosisOutcome(
             result=OrchestratorResult(
                 request_id="", response=message, agent_type=AgentType.GENERAL,
                 intent=intent, agent_types=[], routing_reason="query_context_clarification",
             ), knowledge=KnowledgeResult(), clarification_required=True,
+            diagnosis_build_result=build_result,
         )
 
     async def _acquire(self, query: QueryContext) -> EvidenceBundle:

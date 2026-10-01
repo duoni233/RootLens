@@ -81,6 +81,7 @@ class RootLensEvaluator:
                     memory_context="", history=history[-5:] or None,
                     environment=runtime_input.environment,
                     anchor_time=runtime_input.anchor_time,
+                    build_diagnosis=False,
                 )
                 outcome = diagnosis.outcome
                 result = outcome.result

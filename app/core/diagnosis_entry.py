@@ -28,6 +28,7 @@ async def run_diagnosis(
     history: Optional[list[dict[str, str]]] = None,
     environment: Optional[str] = None,
     anchor_time: Optional[datetime] = None,
+    build_diagnosis: bool = True,
 ) -> RecognizedDiagnosis:
     intent = await orchestrator.recognize_intent(message, history=history)
     intent = replace(intent, entities=project_rootlens_entities(intent.entities))
@@ -36,5 +37,6 @@ async def run_diagnosis(
         memory_context=memory_context, history=history,
         intent_result=intent, environment=environment,
         anchor_time=anchor_time,
+        build_diagnosis=build_diagnosis,
     )
     return RecognizedDiagnosis(intent=intent, outcome=outcome)

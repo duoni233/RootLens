@@ -113,6 +113,7 @@ async def lifespan(app: FastAPI):
     from core.skill_loader import SkillManager
     from core.rootlens_config import memory_options, knowledge_collection
     from core.diagnosis_pipeline import DiagnosisPipeline
+    from core.diagnosis_assembler import DiagnosisAssembler
     from evaluation.rootlens_evaluator import RootLensEvaluator
     from evaluation.rootlens_judge import RootLensJudge
     from evaluation.rootlens_baseline import BaselineStore
@@ -217,6 +218,7 @@ async def lifespan(app: FastAPI):
         dataset_id=incident_tools.manifest.dataset_id,
         dataset_version=incident_tools.manifest.dataset_version,
         timezone=incident_tools.manifest.timezone,
+        assembler=DiagnosisAssembler(_orchestrator._client, cfg["model"]),
     )
     _rootlens_evaluator = RootLensEvaluator(
         orchestrator=_orchestrator, pipeline=_diagnosis_pipeline,

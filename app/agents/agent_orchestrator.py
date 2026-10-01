@@ -77,6 +77,19 @@ class AgentResponse:
 
 
 @dataclass
+class AgentExecutionRecord:
+    requested_agent: AgentType
+    executed_agent: AgentType
+    role: str
+    success: bool
+    content: str
+    latency_ms: float = 0.0
+    escalated: bool = False
+    degraded: bool = False
+    error: Optional[str] = None
+
+
+@dataclass
 class Request:
     message:     str
     user_id:     str
@@ -93,6 +106,9 @@ class Request:
     evidence_entities: Dict[str, List[str]] = field(default_factory=dict)
     routing_signals: Dict[str, float] = field(default_factory=dict)
     routing_signal_sources: Dict[str, List[str]] = field(default_factory=dict)
+    agent_execution_attempts: Dict[AgentType, List[AgentExecutionRecord]] = field(
+        default_factory=dict, repr=False)
+    execution_primary: Optional[AgentType] = field(default=None, repr=False)
 
 
 @dataclass
@@ -108,6 +124,8 @@ class OrchestratorResult:
     supporting_agents: List[AgentType] = field(default_factory=list)
     routing_reason: str = ""
     routing_confidence: float = 0.0
+    agent_executions: List[AgentExecutionRecord] = field(default_factory=list)
+    clarification_required: bool = False
 
 
 @dataclass
@@ -296,6 +314,7 @@ class AgentOrchestrator:
         if base_url:
             kwargs["base_url"] = base_url
         client = AsyncAnthropic(**kwargs)
+        self._client = client
 
         self._intent_recognizer = IntentRecognizer(api_key=api_key, base_url=base_url, model=model)
         self._skill_manager = skill_manager
@@ -352,6 +371,7 @@ class AgentOrchestrator:
                 primary_agent=AgentType.GENERAL,
                 routing_reason="低置信度 OTHER 意图，先澄清用户需求",
                 routing_confidence=req.intent_confidence,
+                clarification_required=True,
             )
 
         # 复合故障可由主 Agent 和辅助 Agent 并行诊断。
@@ -360,7 +380,10 @@ class AgentOrchestrator:
             return await self.run_parallel(req, decision)
 
         # 2. 执行主 Agent（含降级）
+        req.agent_execution_attempts = {}
+        req.execution_primary = decision.primary_agent
         response = await self._execute(req, decision.primary_agent)
+        executions = self._execution_records(req, decision.primary_agent, response)
 
         # 4. 升级检查
         escalated = False
@@ -384,6 +407,7 @@ class AgentOrchestrator:
             supporting_agents=[],
             routing_reason=decision.reason,
             routing_confidence=decision.confidence,
+            agent_executions=executions,
         )
 
     async def run_parallel(self, req: Request, decision: RoutingDecision) -> OrchestratorResult:
@@ -393,8 +417,13 @@ class AgentOrchestrator:
         """
         t0 = time.monotonic()
         agent_types = decision.agent_types
+        req.agent_execution_attempts = {}
+        req.execution_primary = decision.primary_agent
         tasks = [self._execute(req, at) for at in agent_types]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
+        executions = []
+        for requested, response in zip(agent_types, responses):
+            executions.extend(self._execution_records(req, requested, response))
 
         # 合并：主 Agent 在前，辅助 Agent 在后。
         parts = []
@@ -423,7 +452,29 @@ class AgentOrchestrator:
             supporting_agents=decision.supporting_agents,
             routing_reason=decision.reason,
             routing_confidence=decision.confidence,
+            agent_executions=executions,
         )
+
+    @staticmethod
+    def _execution_records(req: Request, requested: AgentType,
+                           response: Any) -> List[AgentExecutionRecord]:
+        recorded = req.agent_execution_attempts.get(requested)
+        if recorded:
+            return recorded
+        role = "primary" if requested == req.execution_primary else "supporting"
+        if isinstance(response, AgentResponse):
+            return [AgentExecutionRecord(
+                requested_agent=requested, executed_agent=response.agent_type,
+                role=role, success=response.success, content=response.content,
+                latency_ms=response.latency_ms, escalated=response.escalate,
+                degraded=not response.success or response.agent_type != requested,
+                error=None if response.success else "agent_failed",
+            )]
+        return [AgentExecutionRecord(
+            requested_agent=requested, executed_agent=requested, role=role,
+            success=False, content="", degraded=True,
+            error="agent_exception",
+        )]
 
     # ── 路由逻辑 ──────────────────────────────────────────────────────────────
 
@@ -650,17 +701,32 @@ class AgentOrchestrator:
 
     async def _execute(self, req: Request, agent_type: AgentType) -> AgentResponse:
         """执行 Agent，失败时降级到 GeneralAgent。"""
+        role = "primary" if agent_type == req.execution_primary else "supporting"
+        attempts = req.agent_execution_attempts.setdefault(agent_type, [])
+
+        def record(response: AgentResponse, *, error: Optional[str] = None) -> None:
+            attempts.append(AgentExecutionRecord(
+                requested_agent=agent_type, executed_agent=response.agent_type,
+                role=role, success=response.success, content=response.content,
+                latency_ms=response.latency_ms, escalated=response.escalate,
+                degraded=not response.success or response.agent_type != agent_type,
+                error=error or (None if response.success else "agent_failed"),
+            ))
+
         agent = self._best_agent(agent_type)
         if agent is None:
             agent = self._best_agent(AgentType.GENERAL)
         if agent is None:
-            return AgentResponse(
+            response = AgentResponse(
                 agent_type=AgentType.GENERAL,
                 content="服务暂时不可用，请稍后重试。",
                 success=False,
             )
+            record(response, error="agent_unavailable")
+            return response
 
         response = await agent.handle(req)
+        record(response)
 
         # 专属 Agent 失败时降级到 GeneralAgent
         if not response.success and agent_type != AgentType.GENERAL:
@@ -668,6 +734,7 @@ class AgentOrchestrator:
             fallback = self._best_agent(AgentType.GENERAL)
             if fallback:
                 response = await fallback.handle(req)
+                record(response)
 
         return response
 
