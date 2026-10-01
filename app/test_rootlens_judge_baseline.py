@@ -26,7 +26,8 @@ VALID = {
 }
 
 
-def judge_with_response(raw, *, stop_reason="end_turn", exception=None):
+def judge_with_response(raw, *, stop_reason="end_turn", exception=None,
+                        mode="diagnosis"):
     response = SimpleNamespace(
         content=[SimpleNamespace(type="text", text=raw)],
         stop_reason=stop_reason,
@@ -43,6 +44,7 @@ def judge_with_response(raw, *, stop_reason="end_turn", exception=None):
         knowledge_document_ids=["RL-RB-DB-001"],
         diagnosis_points=["connection pool"],
         forbidden_claims=["deployment caused the outage"],
+        evaluation_mode=mode,
     ))
     return result, create
 
@@ -56,6 +58,20 @@ def test_valid_judge_json_and_prompt_inputs():
     for value in ("E-LOG-001", "RL-RB-DB-001", "connection pool",
                   "deployment caused the outage"):
         assert value in prompt
+
+
+@pytest.mark.parametrize("mode,required", [
+    ("clarification", ("最小必要信息", "不要因为没有猜根因", "未指出具体缺项")),
+    ("runbook", ("只查询 Runbook", "没有现场 Evidence 是正常的")),
+    ("diagnosis", ("本例是故障诊断", "现场证据")),
+])
+def test_judge_mode_guidance_is_explicit(mode, required):
+    result, create = judge_with_response(json.dumps(VALID), mode=mode)
+    assert result.valid
+    prompt = create.call_args.kwargs["messages"][0]["content"]
+    assert f'"evaluation_mode": "{mode}"' in prompt
+    for phrase in required:
+        assert phrase in prompt
 
 
 @pytest.mark.parametrize("raw,status", [
@@ -185,6 +201,22 @@ def test_judge_mode_mismatch_is_incompatible(tmp_path):
     _, regression = store.compare(sample_report(judged=True))
     assert regression["status"] == "incompatible"
     assert "judge_enabled" in regression["incompatibility_reason"]
+
+
+def test_stage3_v1_judge_baseline_cannot_compare_to_v2(tmp_path):
+    store = BaselineStore(tmp_path / "approved.json")
+    previous = sample_report(judged=True)
+    previous["suite"]["suite_version"] = "stage3-v1"
+    previous["suite"]["judge_schema_version"] = "1"
+    store.promote(previous)
+    baseline, regression = store.compare(sample_report(judged=True))
+    assert not baseline["compatible"]
+    assert regression["status"] == "incompatible"
+    assert set(regression["incompatibility_reason"]) == {
+        "suite_version", "judge_schema_version",
+    }
+    assert regression["metric_deltas"] == {}
+    assert regression["judge_deltas"] == {}
 
 
 def test_regression_deltas_and_model_change_are_explicit(tmp_path):

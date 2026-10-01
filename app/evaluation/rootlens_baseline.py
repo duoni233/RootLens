@@ -18,9 +18,9 @@ from evaluation.rootlens_judge import DIMENSIONS
 
 
 SUITE_NAME = "rootlens-diagnosis"
-SUITE_VERSION = "stage3-v1"
+SUITE_VERSION = "stage3-v2"
 EVALUATION_SCHEMA_VERSION = "1"
-JUDGE_SCHEMA_VERSION = "1"
+JUDGE_SCHEMA_VERSION = "2"
 DEFAULT_APPROVED_PATH = Path("/app/data/eval/rootlens/approved.json")
 REGRESSION_DROP = 0.05  # Absolute score-point drop on 0..1 metrics.
 DETERMINISTIC_COMPARISONS = (

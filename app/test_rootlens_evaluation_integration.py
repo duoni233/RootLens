@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from agents.agent_orchestrator import AgentOrchestrator, AgentResponse, AgentType
+from agents.agent_orchestrator import AgentOrchestrator, AgentResponse, AgentType, DatabaseAgent
 from core.diagnosis_pipeline import DiagnosisPipeline, KnowledgeResult, KnowledgeSource
 from core.intent_recognizer import IntentCategory
 from evaluation.rootlens_cases import EvaluationCase, ExpectedResult, load_rootlens_cases
@@ -39,6 +39,8 @@ def evaluation_runtime(monkeypatch):
             intent = IntentCategory.RUNBOOK_QUERY
         elif "CPU" in message:
             intent = IntentCategory.RESOURCE_ISSUE
+        elif recognizer._release_investigation_focus(message.lower()):
+            intent = IntentCategory.DEPLOYMENT_ISSUE
         else:
             intent = IntentCategory.SERVICE_INCIDENT
         return {"intent": intent, "confidence": 0.99, "reasoning": "offline test double"}
@@ -119,7 +121,7 @@ def test_six_cases_use_intent_recognizer_and_pipeline_with_real_evidence(
     assert report.judge_status == "not_run"
 
     incident = observations["INC-001"]
-    assert incident.intent == "service_incident"
+    assert incident.intent == "deployment_issue"
     assert incident.primary_agent == "application"
     assert incident.supporting_agents == ["database"]
     assert "rootlens-demo:v1:INC-001:log:L001" in incident.evidence_ids
@@ -169,7 +171,7 @@ def test_default_suite_metric_numerators_denominators(evaluation_runtime):
     metrics = report.to_dict()["metrics"]
     assert metrics["intent_accuracy"] == {
         "numerator": 6, "denominator": 6, "value": 1.0}
-    assert metrics["intent_macro_f1"]["denominator"] == 3
+    assert metrics["intent_macro_f1"]["denominator"] == 4
     assert metrics["primary_agent_accuracy"]["denominator"] == 4
     assert metrics["supporting_agent_exact_match"]["denominator"] == 4
     assert metrics["supporting_agent_partial_match"]["denominator"] == 4
@@ -254,6 +256,87 @@ def test_clarification_never_executes_agent(evaluation_runtime):
     assert observation.clarification_required
     assert not runtime["agent_requests"]
     assert not runtime["knowledge_queries"]
+
+
+def test_runbook_entities_are_projected_before_request_and_agent_prompt(
+        evaluation_runtime):
+    runtime = evaluation_runtime
+    case = next(item for item in load_rootlens_cases() if item.case_id == "runbook-db-pool")
+    observation = evaluate(runtime, [case]).observations[0]
+    assert observation.intent == "runbook_query"
+    request, agent_type = runtime["agent_requests"][0]
+    assert agent_type == AgentType.DATABASE
+    assert request.entities == {"error_code": ["DBConnectionError"]}
+
+    response = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="offline")],
+        stop_reason="end_turn", usage=SimpleNamespace(output_tokens=5),
+    )
+    create = AsyncMock(return_value=response)
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    agent = DatabaseAgent(client, "offline")
+    asyncio.run(agent._call_llm(request))
+    sent = str(create.call_args.kwargs["messages"])
+    assert '"error_code": ["DBConnectionError"]' in sent
+    assert all(field not in sent for field in ("order_id", "amount", "product"))
+
+
+def test_chat_returns_only_projected_rootlens_entities(evaluation_runtime, monkeypatch):
+    from api import main
+
+    runtime = evaluation_runtime
+
+    class FakeMemory:
+        enable_user_profile = False
+
+        async def get_context(self, *args, **kwargs):
+            return SimpleNamespace(recent_messages=[], to_prompt_text=lambda: "")
+
+        async def add_message(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(main, "_orchestrator", runtime["orchestrator"])
+    monkeypatch.setattr(main, "_diagnosis_pipeline", runtime["pipeline"])
+    monkeypatch.setattr(main, "_memory", FakeMemory())
+
+    async def request():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
+                                    base_url="http://test") as client:
+            return await client.post("/chat", json={
+                "message": "如何处理 DBConnectionError 连接池耗尽？请查 Runbook",
+                "user_id": "offline", "conv_id": "isolated",
+            })
+
+    response = asyncio.run(request())
+    assert response.status_code == 200
+    assert response.json()["entities"] == {"error_code": ["DBConnectionError"]}
+
+
+def test_judge_mode_is_chosen_from_observation_not_expected(
+        evaluation_runtime, tmp_path):
+    runtime = evaluation_runtime
+    valid = JudgeResult(
+        valid=True, raw_status="valid", evidence_grounding=0.8,
+        diagnostic_reasoning=0.8, actionability=0.8,
+        safety_and_uncertainty=0.8, overall_score=0.8,
+        rationale="offline test",
+    )
+    judge = SimpleNamespace(judge=AsyncMock(return_value=valid))
+    evaluator = RootLensEvaluator(
+        orchestrator=runtime["orchestrator"], pipeline=runtime["pipeline"],
+        judge=judge, baseline_store=BaselineStore(tmp_path / "approved.json"),
+    )
+    cases = load_rootlens_cases()
+    clarification = next(case for case in cases if case.case_id == "clarify-missing-service")
+    misleading_expected = clarification.model_copy(update={
+        "expected": clarification.expected.model_copy(update={"clarification_required": False}),
+    })
+    chosen = [cases[0], cases[3], misleading_expected]
+    report = asyncio.run(evaluator.run(chosen, include_judge=True))
+    assert [item.clarification_required for item in report.observations] == [False, False, True]
+    assert [call.kwargs["evaluation_mode"] for call in judge.judge.await_args_list] == [
+        "diagnosis", "runbook", "clarification",
+    ]
 
 
 def test_http_default_uses_rootlens_not_legacy_judge_or_baseline(
@@ -409,4 +492,4 @@ def test_labels_remain_outside_image_and_compose_mounts_read_only():
     app_root = Path(__file__).parent
     assert "datasets/evaluation/" in (app_root / ".dockerignore").read_text(encoding="utf-8")
     compose = (app_root / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "./datasets/evaluation/stage3-v1.json:/eval-data/stage3-v1.json:ro" in compose
+    assert "./datasets/evaluation/stage3-v2.json:/eval-data/stage3-v2.json:ro" in compose

@@ -52,7 +52,7 @@ def recognizer():
 
 
 def test_mvp_entities_pattern_and_route(recognizer, orchestrator):
-    assert recognizer._pattern_recognize(MVP)["intent"] == IntentCategory.SERVICE_INCIDENT
+    assert recognizer._pattern_recognize(MVP)["intent"] == IntentCategory.DEPLOYMENT_ISSUE
     entities = recognizer._extract_entities(MVP)
     assert entities["service_name"] == ["payment-service"]
     assert entities["start_time"] == ["10:05"]

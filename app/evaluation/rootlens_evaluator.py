@@ -123,6 +123,10 @@ class RootLensEvaluator:
         judgments = []
         if include_judge:
             for case, observed in zip(cases, observations):
+                evaluation_mode = (
+                    "clarification" if observed.clarification_required else
+                    "runbook" if observed.intent == "runbook_query" else "diagnosis"
+                )
                 result = await self.judge.judge(
                     question=case.runtime_inputs()[-1].message,
                     response=observed.response or "",
@@ -130,6 +134,7 @@ class RootLensEvaluator:
                     knowledge_document_ids=observed.knowledge_document_ids or [],
                     diagnosis_points=case.expected.diagnosis_points,
                     forbidden_claims=case.expected.forbidden_claims,
+                    evaluation_mode=evaluation_mode,
                 )
                 judgments.append((case.case_id, result))
         judge_summary = summarize_judgments(judgments, ran=include_judge)

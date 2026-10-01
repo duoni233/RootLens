@@ -45,10 +45,10 @@ class IntentCategory(Enum):
     TECHNICAL_LOGIN = "technical_login"  # 登录认证故障
     TECHNICAL_CRASH = "technical_crash"  # 崩溃/错误码
     HUMAN_HANDOFF = "human_handoff"      # 转人工
-    SERVICE_INCIDENT = "service_incident"      # 服务异常/不可用/错误率升高
+    SERVICE_INCIDENT = "service_incident"      # 主要调查服务异常，未聚焦发布/版本/变更关联
     LATENCY_ISSUE = "latency_issue"            # 延迟升高/超时
     DATABASE_ISSUE = "database_issue"          # 数据库连接、慢查询、锁等待
-    DEPLOYMENT_ISSUE = "deployment_issue"      # 发布/部署后异常
+    DEPLOYMENT_ISSUE = "deployment_issue"      # 主要调查近期发布/版本/配置变更与异常的关联
     RESOURCE_ISSUE = "resource_issue"          # CPU/内存/磁盘/连接数异常
     NETWORK_ISSUE = "network_issue"            # 网关、Nginx、DNS、网络抖动
     RUNBOOK_QUERY = "runbook_query"            # 查询 Runbook/SOP
@@ -286,7 +286,10 @@ class IntentRecognizer:
 
         prompt = f"""你是企业系统故障诊断平台 RootLens 的意图分析专家。根据示例判断用户意图，返回 JSON。
 如果用户问题能匹配细粒度业务意图，请优先返回细粒度意图，而不是宽泛大类。
-例如服务 5xx 激增优先返回 service_incident，发布后异常优先返回 deployment_issue，数据库连接错误优先返回 database_issue。
+按用户当前主要调查焦点分类，不只看症状词：主要调查服务异常本身、未明确聚焦变更关联时返回 service_incident；
+明确把近期发布、版本或配置变更与异常联系起来并要求调查这种关联时返回 deployment_issue。
+仅说“不确定是否与发布有关”且主要要求排查服务异常时，仍优先 service_incident；发布先于异常不能证明因果。
+数据库连接错误优先返回 database_issue。
 
 示例:
 {examples}
@@ -373,11 +376,25 @@ class IntentRecognizer:
         }
 
         best_cat, best_score = self._best_pattern_match(msg, specific_patterns)
+        if best_cat == IntentCategory.SERVICE_INCIDENT and self._release_investigation_focus(msg):
+            return {"intent": IntentCategory.DEPLOYMENT_ISSUE,
+                    "confidence": max(best_score, 0.75)}
         if best_cat != IntentCategory.OTHER:
             return {"intent": best_cat, "confidence": best_score}
 
         best_cat, best_score = self._best_pattern_match(msg, generic_patterns)
         return {"intent": best_cat, "confidence": best_score}
+
+    @staticmethod
+    def _release_investigation_focus(message: str) -> bool:
+        """Detect a release-focused investigation without naming a case or service."""
+        if re.search(r"不确定.{0,8}是否与.{0,8}(?:发布|部署|上线|版本|变更).{0,4}有关", message):
+            return False
+        return any(re.search(pattern, message) for pattern in (
+            r"(?:刚|近期|最近).{0,6}(?:发布|部署|上线)",
+            r"(?:发布|部署|上线|配置变更).{0,30}(?:后|之后|完).{0,20}(?:开始|出现|发生|5xx|错误|异常)",
+            r"(?:发布|部署|版本|配置变更).{0,25}(?:有没有问题|是否有问题|是否相关|是否导致)",
+        ))
 
     # ── 投票合并 ──────────────────────────────────────────────────────────────
 

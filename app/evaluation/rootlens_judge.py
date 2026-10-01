@@ -78,6 +78,22 @@ DIMENSIONS = (
     "evidence_grounding", "diagnostic_reasoning", "actionability",
     "safety_and_uncertainty",
 )
+EvaluationMode = Literal["diagnosis", "runbook", "clarification"]
+
+MODE_GUIDANCE = {
+    "diagnosis": "本例是故障诊断；按上述现场证据、推理、排查动作与安全性标准评分。",
+    "runbook": (
+        "本例只查询 Runbook。没有现场 Evidence 是正常的，不因此扣分。"
+        "重点评价知识是否准确、是否把通用处置规则误说成本次故障事实，以及建议的边界。"
+    ),
+    "clarification": (
+        "本例是关键上下文不足时的澄清。正确做法是停止现场取证和根因诊断，"
+        "明确询问用户最小必要信息。diagnostic_reasoning 评价是否正确识别信息不足并克制推断；"
+        "actionability 评价用户能否看懂下一步具体应补什么。"
+        "不要因为没有猜根因、调用工具或给完整排障步骤而扣分；"
+        "若仅泛泛说需要更多信息、未指出具体缺项，仍应降低 actionability。"
+    ),
+}
 
 
 def _reject_constant(value: str) -> None:
@@ -99,6 +115,8 @@ class RootLensJudge:
 仅返回一个 JSON 对象，必须恰好包含四个数值字段及 brief_reason 字符串，不要 Markdown 或额外字段。
 示例：{"evidence_grounding":0.8,"diagnostic_reasoning":0.7,"actionability":0.8,"safety_and_uncertainty":0.9,"brief_reason":"证据引用充分，但仍需验证假设"}
 
+{mode_guidance}
+
 评测输入：
 {payload}"""
 
@@ -110,8 +128,10 @@ class RootLensJudge:
                     operational_evidence: list[dict[str, str]],
                     knowledge_document_ids: list[str],
                     diagnosis_points: Optional[list[str]] = None,
-                    forbidden_claims: Optional[list[str]] = None) -> JudgeResult:
+                    forbidden_claims: Optional[list[str]] = None,
+                    evaluation_mode: EvaluationMode = "diagnosis") -> JudgeResult:
         context = {
+            "evaluation_mode": evaluation_mode,
             "question": question[:4000],
             "response": response[:8000],
             "operational_evidence": operational_evidence[:30],
@@ -119,7 +139,8 @@ class RootLensJudge:
             "diagnosis_points": diagnosis_points or [],
             "forbidden_claims": forbidden_claims or [],
         }
-        prompt = self.PROMPT.replace("{payload}", json.dumps(context, ensure_ascii=False))
+        prompt = (self.PROMPT.replace("{mode_guidance}", MODE_GUIDANCE[evaluation_mode])
+                  .replace("{payload}", json.dumps(context, ensure_ascii=False)))
         try:
             result = await self.client.messages.create(
                 model=self.model, max_tokens=768, temperature=0,

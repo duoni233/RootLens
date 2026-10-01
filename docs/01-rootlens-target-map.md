@@ -47,10 +47,10 @@ MVP 阶段可以先保留 3 个 Agent：`general_ops / application / database`�
 ## 3. 核心 Intent
 
 ```text
-service_incident      服务不可用或 5xx 激增
+service_incident      主要调查服务异常本身（如 5xx 激增），未明确聚焦变更关联
 latency_issue         延迟升高或超时
 database_issue        数据库慢查询、连接池、锁等待
-deployment_issue      发布后异常、版本回滚
+deployment_issue      主要调查近期发布、版本或配置变更与异常的关联
 resource_issue        CPU/内存/磁盘/连接数异常
 network_issue         网关、Nginx、DNS、网络抖动
 runbook_query         查询处理手册或 SOP
@@ -58,6 +58,13 @@ alert_triage          告警分级与初步判断
 human_escalation      需要人工介入
 unknown               无法判断
 ```
+
+当前 Intent 为单个主标签，按用户**当前主要调查焦点**分类，不只按症状词分类。
+“payment-service 5xx 激增”属于 `service_incident`；“发布 v2.3.7 后开始 5xx，调查两者关联”属于 `deployment_issue`。
+仅说“不确定是否与发布有关”、主要仍在询问服务异常时属于 `service_incident`。
+时间先后不等于因果；该分类不表示发布已被证明为根因。
+
+RootLens 当前运行态实体投影仅允许 `date`、`service_name`、`start_time`、`version`、`status_code`、`error_code`，并过滤空值与和旧客服实体重合的值。下方实体清单是目标设计，不代表均已实现。
 
 ## 4. 核心 Entities
 
