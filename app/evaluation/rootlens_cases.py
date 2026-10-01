@@ -72,6 +72,7 @@ class EvaluationObservation(BaseModel):
     supporting_agents: Optional[list[str]] = None
     evidence_ids: Optional[list[str]] = None
     evidence_types: Optional[list[str]] = None
+    operational_evidence: list[dict[str, str]] = Field(default_factory=list)
     tool_status: Optional[dict[str, ToolStatus]] = None
     runbook_ids: Optional[list[str]] = None
     knowledge_document_ids: Optional[list[str]] = None

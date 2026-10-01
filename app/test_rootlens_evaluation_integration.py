@@ -1,6 +1,7 @@
 """Stage 3-2 evaluation through the shared diagnosis core, without paid calls."""
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -11,6 +12,8 @@ from core.diagnosis_pipeline import DiagnosisPipeline, KnowledgeResult, Knowledg
 from core.intent_recognizer import IntentCategory
 from evaluation.rootlens_cases import EvaluationCase, ExpectedResult, load_rootlens_cases
 from evaluation.rootlens_evaluator import RootLensEvaluator
+from evaluation.rootlens_baseline import BaselineStore
+from evaluation.rootlens_judge import JudgeResult
 from mcp.incident_tools import IncidentTools
 from mcp.tool_manager import MCPToolManager
 
@@ -288,6 +291,118 @@ def test_http_rejects_legacy_fields_without_explicit_mode(evaluation_runtime, mo
                 {"message": "refund", "expected_intent": "refund"}]})
 
     assert asyncio.run(request()).status_code == 400
+
+
+def test_judge_is_opt_in_and_expected_reaches_only_judge_after_runtime(
+        evaluation_runtime, tmp_path, monkeypatch):
+    runtime = evaluation_runtime
+    sentinel = "PRIVATE-JUDGE-LABEL"
+    case = EvaluationCase(
+        case_id="judge-private", message="payment-service 10:05 5xx 激增",
+        expected=ExpectedResult(diagnosis_points=[sentinel],
+                                forbidden_claims=[sentinel]),
+    )
+    calls = []
+    original_run = runtime["pipeline"].run
+
+    async def checked_pipeline(**kwargs):
+        assert sentinel not in str(kwargs)
+        calls.append("pipeline")
+        return await original_run(**kwargs)
+
+    async def checked_judge(**kwargs):
+        assert calls == ["pipeline"]
+        assert sentinel in kwargs["diagnosis_points"]
+        assert sentinel in kwargs["forbidden_claims"]
+        assert kwargs["operational_evidence"]
+        assert kwargs["knowledge_document_ids"] == ["RL-RB-DB-001"]
+        calls.append("judge")
+        return JudgeResult(
+            valid=True, raw_status="valid", evidence_grounding=0.8,
+            diagnostic_reasoning=0.6, actionability=0.9,
+            safety_and_uncertainty=0.7, overall_score=0.75,
+            rationale="Grounded and cautious",
+        )
+
+    monkeypatch.setattr(runtime["pipeline"], "run", checked_pipeline)
+    judge = SimpleNamespace(judge=AsyncMock(side_effect=checked_judge))
+    evaluator = RootLensEvaluator(
+        orchestrator=runtime["orchestrator"], pipeline=runtime["pipeline"],
+        judge=judge, baseline_store=BaselineStore(tmp_path / "approved.json"),
+        model="offline", provider="test",
+    )
+    default = asyncio.run(evaluator.run([case]))
+    assert default.judge_status == "not_run"
+    judge.judge.assert_not_awaited()
+    calls.clear()
+    report = asyncio.run(evaluator.run([case], include_judge=True))
+    assert calls == ["pipeline", "judge"]
+    assert report.judge_status == "complete"
+    assert report.judge["coverage"] == 1.0
+    assert report.regression["status"] == "no_baseline"
+    assert sentinel not in str(runtime["recognizer_calls"])
+    assert sentinel not in str(runtime["agent_requests"])
+    assert not (tmp_path / "approved.json").exists()
+
+
+def test_http_explicit_judge_and_legacy_mode_remain_separate(
+        evaluation_runtime, monkeypatch, tmp_path):
+    from api import main
+
+    runtime = evaluation_runtime
+    result = JudgeResult(
+        valid=True, raw_status="valid", evidence_grounding=0.8,
+        diagnostic_reasoning=0.8, actionability=0.8,
+        safety_and_uncertainty=0.8, overall_score=0.8,
+        rationale="Grounded and cautious",
+    )
+    judge = SimpleNamespace(judge=AsyncMock(return_value=result))
+    evaluator = RootLensEvaluator(
+        orchestrator=runtime["orchestrator"], pipeline=runtime["pipeline"],
+        judge=judge, baseline_store=BaselineStore(tmp_path / "approved.json"),
+    )
+    monkeypatch.setattr(main, "_rootlens_evaluator", evaluator)
+    legacy_report = SimpleNamespace(
+        pass_rate=1.0, total=0, passed=0, avg_scores={},
+        regressions=[], recommendations=[], results=[],
+    )
+    legacy = AsyncMock(return_value=legacy_report)
+    monkeypatch.setattr(main, "_evaluator", SimpleNamespace(run=legacy))
+
+    async def request(payload):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
+                                    base_url="http://test") as client:
+            return await client.post("/eval/run", json=payload)
+
+    cases = [item.model_dump(mode="json") for item in load_rootlens_cases()[:1]]
+    rootlens = asyncio.run(request({"cases": cases, "include_judge": True}))
+    assert rootlens.status_code == 200
+    assert rootlens.json()["judge"]["status"] == "complete"
+    judge.judge.assert_awaited_once()
+    legacy.assert_not_awaited()
+    assert asyncio.run(request({"mode": "legacy", "include_judge": True})).status_code == 400
+    normal_legacy = asyncio.run(request({"mode": "legacy"}))
+    assert normal_legacy.status_code == 200
+    legacy.assert_awaited_once()
+
+
+def test_ordinary_eval_reads_but_never_replaces_approved_baseline(
+        evaluation_runtime, tmp_path):
+    runtime = evaluation_runtime
+    path = tmp_path / "approved.json"
+    store = BaselineStore(path)
+    evaluator = RootLensEvaluator(
+        orchestrator=runtime["orchestrator"], pipeline=runtime["pipeline"],
+        baseline_store=store,
+    )
+    cases = load_rootlens_cases()
+    initial = asyncio.run(evaluator.run(cases)).to_dict()
+    approved = store.promote(initial)
+    before = path.read_bytes()
+    repeated = asyncio.run(evaluator.run(cases)).to_dict()
+    assert repeated["baseline"]["baseline_id"] == approved.baseline_id
+    assert repeated["regression"]["status"] == "compared"
+    assert path.read_bytes() == before
 
 
 def test_labels_remain_outside_image_and_compose_mounts_read_only():

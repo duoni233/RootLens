@@ -34,6 +34,7 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Literal
+from urllib.parse import urlparse
 
 
 _ROOT = str(pathlib.Path(__file__).parent.parent.resolve())
@@ -113,6 +114,8 @@ async def lifespan(app: FastAPI):
     from core.rootlens_config import memory_options, knowledge_collection
     from core.diagnosis_pipeline import DiagnosisPipeline
     from evaluation.rootlens_evaluator import RootLensEvaluator
+    from evaluation.rootlens_judge import RootLensJudge
+    from evaluation.rootlens_baseline import BaselineStore
     from mcp.incident_tools import IncidentTools
 
     cfg = _anthropic_cfg()
@@ -217,6 +220,11 @@ async def lifespan(app: FastAPI):
     )
     _rootlens_evaluator = RootLensEvaluator(
         orchestrator=_orchestrator, pipeline=_diagnosis_pipeline,
+        judge=RootLensJudge(_orchestrator._intent_recognizer.client, cfg["model"]),
+        baseline_store=BaselineStore(pathlib.Path(os.getenv(
+            "ROOTLENS_APPROVED_BASELINE_PATH", "/app/data/eval/rootlens/approved.json"))),
+        model=cfg["model"],
+        provider=urlparse(cfg.get("base_url", "")).hostname or "anthropic",
     )
 
     # 性能监控（可选启动 Prometheus）
@@ -554,6 +562,7 @@ class EvalDialogInput(BaseModel):
 class EvalRunInput(BaseModel):
     """RootLens 默认评测；旧客服评测仅在 mode=legacy 时运行。"""
     mode: Literal["rootlens", "legacy"] = "rootlens"
+    include_judge: bool = False
     cases: Optional[List[EvaluationCase]] = None
     intent_cases: Optional[List[EvalIntentInput]] = None
     dialog_cases: Optional[List[EvalDialogInput]] = None
@@ -655,8 +664,12 @@ async def run_eval(body: Optional[EvalRunInput] = None):
             raise HTTPException(503, "RootLens 评测集不可用") from ex
         if not cases:
             raise HTTPException(400, "评测案例不能为空")
-        return (await _rootlens_evaluator.run(cases)).to_dict()
+        return (await _rootlens_evaluator.run(
+            cases, include_judge=body.include_judge if body else False,
+        )).to_dict()
 
+    if body.include_judge:
+        raise HTTPException(400, "include_judge 仅支持 RootLens 评测")
     if body.cases is not None:
         raise HTTPException(400, "RootLens cases 不能传给 legacy 评测")
     if _evaluator is None:
