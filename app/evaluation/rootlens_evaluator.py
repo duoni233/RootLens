@@ -14,6 +14,7 @@ from evaluation.rootlens_baseline import (
 from evaluation.rootlens_cases import EvaluationCase, EvaluationObservation
 from evaluation.rootlens_judge import RootLensJudge, summarize_judgments
 from evaluation.rootlens_metrics import Metric, score_cases
+from evaluation.rootlens_structured import observe_structured, structured_report
 
 
 @dataclass
@@ -24,13 +25,14 @@ class RootLensEvalReport:
     judge: dict
     baseline: dict
     regression: dict
+    structured: dict | None = None
 
     @property
     def judge_status(self) -> str:
         return self.judge["status"]
 
     def to_dict(self) -> dict:
-        return {
+        report = {
             "mode": ("rootlens_judged" if self.judge["status"] != "not_run"
                      else "rootlens_deterministic"),
             "total": len(self.observations),
@@ -49,6 +51,9 @@ class RootLensEvalReport:
             "regression": self.regression,
             "observations": [item.model_dump(mode="json") for item in self.observations],
         }
+        if self.structured is not None:
+            report["structured"] = self.structured
+        return report
 
 
 class RootLensEvaluator:
@@ -64,11 +69,15 @@ class RootLensEvaluator:
         self.provider = provider
 
     async def run(self, cases: list[EvaluationCase],
-                  *, include_judge: bool = False) -> RootLensEvalReport:
+                  *, include_judge: bool = False,
+                  include_structured: bool = False) -> RootLensEvalReport:
         if include_judge and self.judge is None:
             raise ValueError("RootLens Judge is not configured")
+        if include_structured and self.pipeline.assembler is None:
+            raise ValueError("structured diagnosis assembler is not configured")
         run_id = uuid4().hex
         observations = []
+        structured_observations = []
         for index, case in enumerate(cases):
             history: list[dict[str, str]] = []
             case_observation = None
@@ -81,7 +90,7 @@ class RootLensEvaluator:
                     memory_context="", history=history[-5:] or None,
                     environment=runtime_input.environment,
                     anchor_time=runtime_input.anchor_time,
-                    build_diagnosis=False,
+                    build_diagnosis=include_structured,
                 )
                 outcome = diagnosis.outcome
                 result = outcome.result
@@ -112,12 +121,16 @@ class RootLensEvaluator:
                     response=result.response,
                     rag_stage_status=dict(outcome.knowledge.stages),
                 )
+                if include_structured:
+                    case_structured = observe_structured(case.case_id, diagnosis.intent, outcome)
                 history.extend((
                     {"role": "user", "content": runtime_input.message},
                     {"role": "assistant", "content": result.response},
                 ))
             assert case_observation is not None
             observations.append(case_observation)
+            if include_structured:
+                structured_observations.append(case_structured)
 
         # Labels are touched only after every runtime call has completed.
         metrics = score_cases(cases, observations)
@@ -152,6 +165,8 @@ class RootLensEvaluator:
         draft = RootLensEvalReport(
             observations=observations, metrics=metrics, suite=suite,
             judge=judge_summary, baseline={}, regression={},
+            structured=(structured_report(structured_observations)
+                        if include_structured else None),
         )
         baseline, regression = self.baseline_store.compare(draft.to_dict())
         draft.baseline = baseline

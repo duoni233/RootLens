@@ -1,6 +1,6 @@
 # RootLens 进度记录
 
-更新日期：2026-10-01
+更新日期：2026-10-02
 
 ## 一句话
 
@@ -15,6 +15,8 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 2026-09-30：第 4 批重建 RootLens Docker 并完成真实 LLM `/chat` 联调。短请求通过三路工具取得 9 条证据，RootLens RAG 改写/召回/重排均实际执行，Application 主、Database 辅；补齐证据驱动的 Database Skill 注入。缺条件澄清与 Runbook 不取证均通过。全量回归 115 项通过；原 EchoMind 容器未动。注意 `/eval/run` 尚未接入新管线，模拟数据不代表生产根因准确率。详见 `10-stage2-batch4-live-integration.md`。
 
 2026-10-01：**Stage 3 已完成并关闭。** `/eval/run` 现与 `/chat` 共用 Intent Recognition + DiagnosisPipeline；六案例真实评测经人工审阅后，显式批准 `stage3-v2` / Judge schema `2` 为首份 RootLens baseline。Approved ID 为 `9bd1b2a57d5b411f87541bdcba521af4`，history 快照保留；批准后复评 `compatible=true`、`regression.status=compared`，确定性比较项 delta 均为 0，Judge 比较项均为 stable。详见 `15-stage3-closure.md`。这是一套 **six-case synthetic regression suite**，不代表生产准确率；仍有已知 RAG extra-hit noise，Judge v2 尚未经大规模人工校准。
+
+2026-10-02：Stage 4-3 结构化诊断 API 与显式结构化评测已完成真实六案例验收：6/6 构建成功，`/chat.response` Markdown 保持兼容；Stage 3 approved baseline 仍 `compatible=true`，旧比较项 stable。全量离线测试 242 项通过。结构化契约验证不等于语义正确或生产准确率；正式关闭 Stage 4 待人工确认。详见 `18-stage4-3-structured-acceptance.md`。
 
 ## 已完成
 

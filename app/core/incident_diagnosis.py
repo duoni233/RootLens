@@ -111,6 +111,9 @@ class DiagnosisBuildResult(Contract):
     status: DiagnosisBuildStatus
     diagnosis: IncidentDiagnosis | None = None
     error_code: Text | None = None
+    assembler_latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def fail_closed(self):

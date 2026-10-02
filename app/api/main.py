@@ -47,6 +47,7 @@ from fastapi import FastAPI, HTTPException, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import AwareDatetime, BaseModel, Field
+from core.incident_diagnosis import DiagnosisBuildStatus, IncidentDiagnosis
 from evaluation.rootlens_cases import EvaluationCase, load_rootlens_cases
 
 load_dotenv()
@@ -321,6 +322,8 @@ class ChatResponse(BaseModel):
     evidence_entities: Dict[str, List[str]] = Field(default_factory=dict)
     routing_signal_sources: Dict[str, List[str]] = Field(default_factory=dict)
     clarification_required: bool = False
+    diagnosis: Optional[IncidentDiagnosis] = None
+    diagnosis_status: DiagnosisBuildStatus = DiagnosisBuildStatus.NOT_RUN
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
@@ -421,6 +424,8 @@ async def chat(req: ChatRequest):#我要把用户 POST 过来的 JSON 请求体�
         evidence_entities=outcome.signals.entities,
         routing_signal_sources=outcome.signals.evidence_ids,
         clarification_required=outcome.clarification_required,
+        diagnosis=outcome.diagnosis_build_result.diagnosis,
+        diagnosis_status=outcome.diagnosis_build_result.status,
     )
 
 
@@ -565,6 +570,7 @@ class EvalRunInput(BaseModel):
     """RootLens 默认评测；旧客服评测仅在 mode=legacy 时运行。"""
     mode: Literal["rootlens", "legacy"] = "rootlens"
     include_judge: bool = False
+    include_structured: bool = False
     cases: Optional[List[EvaluationCase]] = None
     intent_cases: Optional[List[EvalIntentInput]] = None
     dialog_cases: Optional[List[EvalDialogInput]] = None
@@ -657,6 +663,8 @@ async def run_eval(body: Optional[EvalRunInput] = None):
     if body is None or body.mode == "rootlens":
         if _rootlens_evaluator is None:
             raise HTTPException(503, "RootLens 评测未初始化")
+        if body and body.include_structured and _rootlens_evaluator.pipeline.assembler is None:
+            raise HTTPException(503, "结构化诊断未初始化")
         if body and (body.intent_cases is not None or body.dialog_cases is not None):
             raise HTTPException(400, "旧评测字段仅支持 mode=legacy")
         try:
@@ -668,8 +676,11 @@ async def run_eval(body: Optional[EvalRunInput] = None):
             raise HTTPException(400, "评测案例不能为空")
         return (await _rootlens_evaluator.run(
             cases, include_judge=body.include_judge if body else False,
+            include_structured=body.include_structured if body else False,
         )).to_dict()
 
+    if body.include_structured:
+        raise HTTPException(400, "include_structured 仅支持 RootLens 评测")
     if body.include_judge:
         raise HTTPException(400, "include_judge 仅支持 RootLens 评测")
     if body.cases is not None:
