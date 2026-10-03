@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from anthropic import AsyncAnthropic
 
 from core.llm_utils import extract_text_content, non_thinking_options
+from core.diagnosis_trace import begin_step, finish_step
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +320,7 @@ class MCPToolManager:
         """
         if n <= 0 or not query.strip():
             return RAGStageResult([query], "skipped")
+        trace_step = begin_step("rag_rewrite", "MCPToolManager")
         prompt = f"""将以下用户查询改写为 {n} 个不同角度的搜索子查询，用于检索知识库。
 要求：每个子查询角度不同，覆盖原始问题的不同方面。
 原始查询: "{query}"
@@ -339,10 +341,13 @@ class MCPToolManager:
                                   for q in queries) or len(queries) > n:
                 raise ValueError("rewrite must return a bounded list of non-empty strings")
             # 原始查询也保留，去重
-            return RAGStageResult(list(dict.fromkeys([query] + [q.strip() for q in queries])),
-                                  "performed")
+            rewritten = list(dict.fromkeys([query] + [q.strip() for q in queries]))
+            finish_step(trace_step, "success", metadata={"result_count": len(rewritten)})
+            return RAGStageResult(rewritten, "performed")
         except Exception as ex:
             logger.warning(f"查询改写失败，使用原始查询: {ex}")
+            finish_step(trace_step, "degraded", error_code="rewrite_failed",
+                        metadata={"result_count": 1, "fallback": True})
             return RAGStageResult([query], "failed", str(ex))
 
         
@@ -371,6 +376,7 @@ class MCPToolManager:
         logger.info(f"查询改写: {query!r} → {sub_queries}")#!r 会用更适合调试的形式显示字符串，比如带引号：'退款多久到账'
 
         # 2. 并行召回：所有子查询同时检索
+        retrieval_step = begin_step("rag_retrieval", "MCPToolManager")
         recall_k = max(top_k, 5)
         tasks = [
             self.call(tool_name, {"query": q, "top_k": recall_k}, context, use_cache=True)
@@ -404,6 +410,18 @@ class MCPToolManager:
         retrieval_status = "degraded" if failures else "performed"
         if failures:
             errors["retrieval"] = "; ".join(failures)
+        finish_step(
+            retrieval_step, "failed" if failures and not merged
+            else "degraded" if failures else "success",
+            result_kind="items" if merged else "empty",
+            error_code="retrieval_partial_failure" if failures and merged
+            else "retrieval_failed" if failures else None,
+            metadata={"result_count": len(merged)},
+            knowledge_ids=list(dict.fromkeys(
+                str(item["chunk_id"]) for item in merged
+                if isinstance(item, dict) and item.get("chunk_id")
+            )),
+        )
 
         if not merged:
             return ToolResult(success=not failures, data=[], tool_name=tool_name,
@@ -438,6 +456,7 @@ class MCPToolManager:
         """
         if len(items) <= top_k:
             return RAGStageResult(items, "skipped")
+        trace_step = begin_step("rag_rerank", "MCPToolManager")
 
         # 将结果序列化为文本供 LLM 评分
         # IDs/metadata must not crowd the actual content out of the rerank prompt.
@@ -465,9 +484,16 @@ class MCPToolManager:
             if (len(order) != len(items) or any(type(i) is not int for i in order)
                     or set(order) != set(range(len(items)))):
                 raise ValueError("rerank must return a permutation of all result indices")
-            return RAGStageResult([items[i] for i in order[:top_k]], "performed")
+            ranked = [items[i] for i in order[:top_k]]
+            finish_step(trace_step, "success", result_kind="items",
+                        metadata={"result_count": len(ranked)},
+                        knowledge_ids=[str(item["chunk_id"]) for item in ranked
+                                       if isinstance(item, dict) and item.get("chunk_id")])
+            return RAGStageResult(ranked, "performed")
         except Exception as ex:
             logger.warning(f"重排失败，返回原始顺序: {ex}")
+            finish_step(trace_step, "degraded", error_code="rerank_failed",
+                        metadata={"result_count": min(len(items), top_k), "fallback": True})
             return RAGStageResult(items[:top_k], "failed", str(ex))
 
     @staticmethod

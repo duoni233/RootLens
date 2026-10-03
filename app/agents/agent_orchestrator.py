@@ -375,7 +375,17 @@ class AgentOrchestrator:
             )
 
         # 复合故障可由主 Agent 和辅助 Agent 并行诊断。
-        decision = self._route_decision(req)
+        from core.diagnosis_trace import begin_step, finish_step
+        route_step = begin_step("routing", "AgentOrchestrator")
+        try:
+            decision = self._route_decision(req)
+        except Exception:
+            finish_step(route_step, "failed", error_code="routing_error")
+            raise
+        finish_step(route_step, "success", metadata={
+            "primary_agent": decision.primary_agent.value,
+            "supporting_agents": [agent.value for agent in decision.supporting_agents],
+        })
         if decision.multi_agent:
             return await self.run_parallel(req, decision)
 
@@ -704,14 +714,40 @@ class AgentOrchestrator:
         role = "primary" if agent_type == req.execution_primary else "supporting"
         attempts = req.agent_execution_attempts.setdefault(agent_type, [])
 
-        def record(response: AgentResponse, *, error: Optional[str] = None) -> None:
-            attempts.append(AgentExecutionRecord(
+        def record(response: AgentResponse, *, error: Optional[str] = None) -> AgentExecutionRecord:
+            execution = AgentExecutionRecord(
                 requested_agent=agent_type, executed_agent=response.agent_type,
                 role=role, success=response.success, content=response.content,
                 latency_ms=response.latency_ms, escalated=response.escalate,
                 degraded=not response.success or response.agent_type != agent_type,
                 error=error or (None if response.success else "agent_failed"),
-            ))
+            )
+            attempts.append(execution)
+            return execution
+
+        from core.diagnosis_trace import begin_step, finish_step
+
+        async def execute_once(selected: BaseAgent) -> AgentResponse:
+            step = begin_step("agent_execution", "AgentOrchestrator")
+            try:
+                answer = await selected.handle(req)
+            except Exception:
+                finish_step(step, "failed", error_code="agent_exception", metadata={
+                    "requested_agent": agent_type.value, "executed_agent": selected.agent_type.value,
+                    "role": role, "fallback": selected.agent_type != agent_type,
+                })
+                raise
+            execution = record(answer)
+            finish_step(step, "degraded" if execution.degraded and execution.success
+                        else "success" if execution.success else "failed",
+                        error_code=execution.error, metadata={
+                            "requested_agent": execution.requested_agent.value,
+                            "executed_agent": execution.executed_agent.value,
+                            "agent_latency_ms": execution.latency_ms,
+                            "role": execution.role, "escalated": execution.escalated,
+                            "fallback": execution.executed_agent != execution.requested_agent,
+                        })
+            return answer
 
         agent = self._best_agent(agent_type)
         if agent is None:
@@ -722,19 +758,22 @@ class AgentOrchestrator:
                 content="服务暂时不可用，请稍后重试。",
                 success=False,
             )
-            record(response, error="agent_unavailable")
+            execution = record(response, error="agent_unavailable")
+            step = begin_step("agent_execution", "AgentOrchestrator")
+            finish_step(step, "failed", error_code=execution.error, metadata={
+                "requested_agent": agent_type.value, "executed_agent": AgentType.GENERAL.value,
+                "role": role, "fallback": True,
+            })
             return response
 
-        response = await agent.handle(req)
-        record(response)
+        response = await execute_once(agent)
 
         # 专属 Agent 失败时降级到 GeneralAgent
         if not response.success and agent_type != AgentType.GENERAL:
             logger.warning(f"{agent_type.value} 失败，降级到 GeneralAgent")
             fallback = self._best_agent(AgentType.GENERAL)
             if fallback:
-                response = await fallback.handle(req)
-                record(response)
+                response = await execute_once(fallback)
 
         return response
 

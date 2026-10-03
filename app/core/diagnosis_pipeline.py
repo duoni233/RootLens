@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 from agents.agent_orchestrator import AgentOrchestrator, AgentType, OrchestratorResult, Request
 from core.evidence import EvidenceBundle, QueryContext, build_query_context
 from core.diagnosis_assembler import DiagnosisAssembler
+from core.diagnosis_trace import (
+    DiagnosisTrace, begin_step, finish_step, observed_step, skip_step,
+)
 from core.incident_diagnosis import DiagnosisBuildResult, DiagnosisBuildStatus
 from core.intent_recognizer import IntentCategory, IntentResult
 from core.rag_query import build_retrieval_query
@@ -52,6 +56,7 @@ class DiagnosisOutcome:
     clarification_required: bool = False
     diagnosis_build_result: DiagnosisBuildResult = field(default_factory=lambda: DiagnosisBuildResult(
         status=DiagnosisBuildStatus.NOT_RUN))
+    trace: Optional[DiagnosisTrace] = None
 
 
 def evidence_context(bundle: EvidenceBundle) -> str:
@@ -98,6 +103,10 @@ class DiagnosisPipeline:
             and (bool(entities.get("status_code") or entities.get("error_code"))
                  or any(marker in message.lower() for marker in event_markers))
         )
+        gate_step = begin_step("evidence_gate", "DiagnosisPipeline")
+        finish_step(gate_step, "success", metadata={
+            "decision": "acquire" if evidence_required else "skip",
+        })
         if intent == IntentCategory.ALERT_TRIAGE and not evidence_required:
             return self._clarify(
                 intent, "请补充受影响的服务、告警发生时间和具体现象，再进行现场取证。",
@@ -105,21 +114,50 @@ class DiagnosisPipeline:
         bundle = None
         signals = RoutingSignals()
         if evidence_required:
-            query, clarification = build_query_context(
-                entities=entities, environment=environment, anchor_time=anchor_time,
-                dataset_id=self.dataset_id, dataset_version=self.dataset_version,
-                timezone=self.timezone, message=message,
-            )
+            query_step = begin_step("query_context", "QueryContext")
+            try:
+                query, clarification = build_query_context(
+                    entities=entities, environment=environment, anchor_time=anchor_time,
+                    dataset_id=self.dataset_id, dataset_version=self.dataset_version,
+                    timezone=self.timezone, message=message,
+                )
+            except Exception:
+                finish_step(query_step, "failed", error_code="query_context_error")
+                raise
+            finish_step(query_step, "success", metadata={
+                "decision": "clarify" if clarification else "query",
+            })
             if clarification:
                 return self._clarify(intent, clarification, build_diagnosis=build_diagnosis)
             assert query is not None
             bundle = await self._acquire(query)
             signals = extract_routing_signals(bundle)
+        else:
+            skip_step("query_context", "QueryContext", "evidence_not_required")
+            for name in EVIDENCE_TOOLS:
+                skip_step(name, "IncidentTools", "evidence_not_required")
 
         retrieval = build_retrieval_query(message, evidence=bundle)
-        knowledge = (await self.knowledge_lookup(retrieval.query)
-                     if evidence_required or intent == IntentCategory.RUNBOOK_QUERY
-                     else KnowledgeResult())
+        if evidence_required or intent == IntentCategory.RUNBOOK_QUERY:
+            knowledge = await self.knowledge_lookup(retrieval.query)
+            for stage in ("rewrite", "retrieval", "rerank"):
+                stage_type = f"rag_{stage}"
+                state = knowledge.stages.get(stage, "skipped")
+                if state == "skipped":
+                    skip_step(stage_type, "KnowledgeRetrieval", "stage_not_executed")
+                else:
+                    observed_step(
+                        stage_type, "KnowledgeRetrieval",
+                        "degraded" if state in {"failed", "degraded"} else "success",
+                        error_code=f"{stage}_failed" if state == "failed" else None,
+                        metadata={"result_count": len(knowledge.sources)},
+                        knowledge_ids=[source.chunk_id for source in knowledge.sources]
+                        if stage != "rewrite" else [],
+                    )
+        else:
+            knowledge = KnowledgeResult()
+            for stage in ("rewrite", "retrieval", "rerank"):
+                skip_step(f"rag_{stage}", "KnowledgeRetrieval", "knowledge_not_required")
         knowledge_context = knowledge.text
         if knowledge.stages.get("retrieval") in {"failed", "degraded"}:
             knowledge_context += "\n[知识库状态] 检索未完整成功，不能把降级说明当作 Runbook。"
@@ -135,8 +173,12 @@ class DiagnosisPipeline:
             routing_signal_sources=signals.evidence_ids,
         )
         result = await self.orchestrator.run(request)
+        if result.clarification_required:
+            skip_step("routing", "AgentOrchestrator", "clarification")
+            skip_step("agent_execution", "AgentOrchestrator", "clarification")
         build_result = DiagnosisBuildResult(status=DiagnosisBuildStatus.NOT_RUN)
         if build_diagnosis and self.assembler:
+            assembly_step = begin_step("diagnosis_assembly", "DiagnosisAssembler")
             try:
                 if result.clarification_required:
                     build_result = self.assembler.clarify(intent, result.response)
@@ -148,15 +190,42 @@ class DiagnosisPipeline:
                 build_result = DiagnosisBuildResult(
                     status=DiagnosisBuildStatus.ASSEMBLER_FAILED,
                     error_code="unexpected_assembler_error")
+            finish_step(
+                assembly_step, "success" if build_result.status == DiagnosisBuildStatus.SUCCESS
+                else "failed", error_code=build_result.error_code,
+                metadata={
+                    "build_status": build_result.status.value,
+                    "input_tokens": build_result.input_tokens,
+                    "output_tokens": build_result.output_tokens,
+                    "llm_called": not result.clarification_required,
+                },
+            )
+        else:
+            skip_step("diagnosis_assembly", "DiagnosisAssembler", "assembly_not_requested")
         return DiagnosisOutcome(result=result, knowledge=knowledge, bundle=bundle,
                                 signals=signals, diagnosis_build_result=build_result,
                                 clarification_required=result.clarification_required)
 
     def _clarify(self, intent: IntentCategory, message: str,
                  *, build_diagnosis: bool = True) -> DiagnosisOutcome:
+        for name in EVIDENCE_TOOLS:
+            skip_step(name, "IncidentTools", "clarification")
+        for stage in ("rewrite", "retrieval", "rerank"):
+            skip_step(f"rag_{stage}", "KnowledgeRetrieval", "clarification")
+        skip_step("query_context", "QueryContext", "clarification_before_query")
+        skip_step("routing", "AgentOrchestrator", "clarification")
+        skip_step("agent_execution", "AgentOrchestrator", "clarification")
         build_result = DiagnosisBuildResult(status=DiagnosisBuildStatus.NOT_RUN)
         if build_diagnosis and self.assembler:
+            assembly_step = begin_step("diagnosis_assembly", "DiagnosisAssembler")
             build_result = self.assembler.clarify(intent, message)
+            finish_step(assembly_step,
+                        "success" if build_result.status == DiagnosisBuildStatus.SUCCESS else "failed",
+                        error_code=build_result.error_code,
+                        metadata={"build_status": build_result.status.value,
+                                  "llm_called": False})
+        else:
+            skip_step("diagnosis_assembly", "DiagnosisAssembler", "assembly_not_requested")
         return DiagnosisOutcome(
             result=OrchestratorResult(
                 request_id="", response=message, agent_type=AgentType.GENERAL,
@@ -166,12 +235,52 @@ class DiagnosisPipeline:
         )
 
     async def _acquire(self, query: QueryContext) -> EvidenceBundle:
-        results = await asyncio.gather(*(
-            self.tools.call(name, query.tool_params(name, limit=30)) for name in EVIDENCE_TOOLS
-        ), return_exceptions=True)
+        params_by_name = {name: query.tool_params(name, limit=30) for name in EVIDENCE_TOOLS}
+
+        async def call_one(name: str):
+            handle = begin_step(name, "IncidentTools")
+            try:
+                value = await self.tools.call(name, params_by_name[name])
+            except Exception as ex:
+                value = ex
+            completed_at = datetime.now(timezone.utc)
+            elapsed_ms = ((time.monotonic_ns() - handle.started_ns) / 1_000_000
+                          if handle else None)
+            return value, handle, completed_at, elapsed_ms
+
+        raw = await asyncio.gather(*(call_one(name) for name in EVIDENCE_TOOLS),
+                                   return_exceptions=True)
+        observed = [item if isinstance(item, tuple) else
+                    (item, None, datetime.now(timezone.utc), None) for item in raw]
+        results = [item[0] for item in observed]
         normalized = {
             name: (value if isinstance(value, ToolResult) else ToolResult(
                 success=False, data=None, tool_name=name, error=str(value)))
             for name, value in zip(EVIDENCE_TOOLS, results)
         }
-        return EvidenceBundle.from_results(query, normalized)
+        bundle = EvidenceBundle.from_results(query, normalized)
+        source_types = {"query_logs": "log", "query_metrics": "metric",
+                        "query_deployments": "deployment"}
+        for name, (value, handle, completed_at, elapsed_ms) in zip(EVIDENCE_TOOLS, observed):
+            state = bundle.tool_status[name]
+            status = {"ok": "success", "empty": "success",
+                      "failed": "failed", "degraded": "degraded"}[state.status]
+            error_code = None
+            if state.status in {"failed", "degraded"}:
+                error = (state.error or "").lower()
+                error_code = ("tool_timeout" if "超时" in error or "timeout" in error
+                              else "circuit_open" if "熔断" in error
+                              else "tool_unavailable")
+            finish_step(
+                handle, status, result_kind=("items" if state.status == "ok" else "empty"
+                                            if state.status == "empty" else None),
+                error_code=error_code,
+                metadata={"cached": getattr(value, "cached", False),
+                          "record_count": sum(item.source_type == source_types[name]
+                                              for item in bundle.evidence),
+                          "fallback": state.status == "degraded"},
+                evidence_ids=[item.evidence_id for item in bundle.evidence
+                              if item.source_type == source_types[name]],
+                completed_at=completed_at, elapsed_ms=elapsed_ms,
+            )
+        return bundle

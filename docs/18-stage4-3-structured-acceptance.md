@@ -1,5 +1,9 @@
 # Stage 4-3 Structured Diagnosis Acceptance
 
+Status: **Stage 4 completed**. The owner accepted the Stage 4-3 review and
+authorized Stage 5-0/5-1. This closure changes documentation only; it does not
+promote or modify the approved Stage 3 baseline.
+
 Date: 2026-10-02 (Asia/Shanghai). This is an acceptance run on the **six-case
 synthetic** RootLens suite, not a production-accuracy estimate.
 
@@ -112,5 +116,7 @@ sample. RootLens RAG still has known extra-hit noise. Source-ID validation is
 not semantic entailment; the human source-attribution correction above shows
 why review is necessary. Judge v2 is not calibrated against a large human set.
 Stage 4 added no Trace, failure-injection platform, database, or frontend.
-Stage 4-3 implementation and acceptance are complete; formal Stage 4 closure
-and any Stage 5 work remain a separate owner decision.
+Trace is separate Stage 5 work. Structured Diagnosis v1 is accepted on the
+six-case synthetic regression suite, not on production data. The known RAG
+extra-hit noise remains; the validator checks references and policy constraints,
+not semantic entailment of a claim by its cited source.

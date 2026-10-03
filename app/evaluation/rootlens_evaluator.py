@@ -91,6 +91,7 @@ class RootLensEvaluator:
                     environment=runtime_input.environment,
                     anchor_time=runtime_input.anchor_time,
                     build_diagnosis=include_structured,
+                    eval_run_id=run_id,
                 )
                 outcome = diagnosis.outcome
                 result = outcome.result
