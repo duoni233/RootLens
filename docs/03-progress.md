@@ -20,6 +20,8 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 
 2026-10-04：Stage 4 已经人工关闭，Stage 5-1 Trace 与 Stage 5-2 受控故障测试完成。Stage 5-3 的真实 Docker/模型验收确认 Trace 正常、273 项离线测试全过（含此前跳过的 3 项隔离 Redis 测试）、Stage 3 baseline 兼容；但 runbook 案例的真实结构化生成两次被正确拒绝，六案例结构化回归为 5/6。**Stage 5 暂不关闭**，先按 `21-stage5-3-reliability-trace-acceptance.md` 处理该质量问题，不进入 Stage 6。
 
+2026-10-04：Stage 5-3.1B 为 Runbook 增加严格的内部生成格式，保留公开 `IncidentDiagnosis v1` 和 Validator；真实 Runbook 连续 3/3 成功，六案例结构化 6/6，Stage 3 baseline 兼容且 Judge stable，全量测试 282 项通过。额外一次 INC-004 人工抽查仍发现把日志空状态借 M401 指标 ID 写成 confirmed finding 的来源归因问题，因此 **Stage 5 仍待人工裁决，不自动封板或进入 Stage 6**。详见 `22-stage5-3-1b-runbook-structured-fix.md`。
+
 ## 已完成
 
 | 模块 | 原版 EchoMind | RootLens 当前实现 | 验证 |
@@ -50,7 +52,7 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 
 1. 生产数据源接入、大规模回归评测和根因准确率仍未验证；当前六案例均为一致性模拟数据。
 2. RAG 仍有与当前故障不直接相关的额外 Runbook 命中；Judge v2 未经大规模人工校准。当前意图兼容接口配置仍禁用 Embedding，实际启用 LLM 与 Pattern 两路。
-3. 结构化 IncidentDiagnosis、执行 Trace 和测试专用故障注入已实施；完整 Trace 的持久化/查询 API 尚未实施。Stage 5-3 的 runbook-only 结构化回归问题待处理。
+3. 结构化 IncidentDiagnosis、执行 Trace 和测试专用故障注入已实施；完整 Trace 的持久化/查询 API 尚未实施。Runbook-only 结构化回归已修复，但 INC-004 部分证据案例的来源归因问题仍待人工裁决。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
 
-Stage 5-3 已执行但未封板；下一步先处理验收发现的 runbook-only 结构化生成不稳定问题。
+Stage 5-3.1B 已完成但 Stage 5 未正式封板；下一步先审查 INC-004 人工抽查发现的来源归因问题。

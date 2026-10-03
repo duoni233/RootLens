@@ -10,7 +10,9 @@ from core.diagnosis_trace import (
 )
 from core.intent_recognizer import IntentCategory
 from mcp.tool_manager import MCPToolManager, Tool, ToolResult
-from test_rootlens_stage4_assembler import MESSAGE, fake_model, intent, make_pipeline
+from test_rootlens_stage4_assembler import (
+    MESSAGE, fake_model, intent, make_pipeline, runbook_synthesis,
+)
 
 
 def run_traced(pipeline, orchestrator, *, recognized=None, message=MESSAGE,
@@ -67,7 +69,7 @@ def test_multi_agent_trace_has_independent_tools_and_real_attempts():
 
 
 def test_runbook_trace_skips_operational_tools_and_keeps_rag():
-    pipeline, orchestrator, _ = make_pipeline()
+    pipeline, orchestrator, _ = make_pipeline(fake_model(runbook_synthesis()))
     use_real_attempts(orchestrator)
     query = intent(IntentCategory.RUNBOOK_QUERY, {"service_name": ["payment-service"]})
     trace = run_traced(pipeline, orchestrator, recognized=query,

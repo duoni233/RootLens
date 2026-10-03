@@ -10,6 +10,7 @@ from agents.agent_orchestrator import (
     AgentOrchestrator, AgentResponse, AgentType, Request,
 )
 from core.diagnosis_assembler import DiagnosisAssembler
+from core.diagnosis_entry import run_diagnosis
 from core.diagnosis_pipeline import (
     DiagnosisPipeline, KnowledgeResult, KnowledgeSource,
 )
@@ -40,6 +41,19 @@ def synthesis(evidence_ids=(), **changes):
                                 "evidence_ids": [evidence_ids[0]]}]
                                if evidence_ids else []),
         "hypotheses": [], "recommended_actions": [], "evidence_gaps": [],
+    }
+    data.update(changes)
+    return data
+
+
+def runbook_synthesis(**changes):
+    data = {
+        "summary": "参考连接池 Runbook 核查配置与等待时间，不能断言本次根因。",
+        "recommended_actions": [{
+            "action": "检查连接池使用率", "reason": "确认是否达到配置上限",
+            "risk_level": "low", "requires_approval": False,
+        }],
+        "evidence_gaps": [],
     }
     data.update(changes)
     return data
@@ -175,7 +189,7 @@ def test_query_context_clarification_skips_model():
 
 
 def test_runbook_only_has_knowledge_but_no_operational_findings():
-    pipeline, _, _ = make_pipeline(fake_model(synthesis()))
+    pipeline, _, client = make_pipeline(fake_model(runbook_synthesis()))
     outcome = run_pipeline(
         pipeline, message="查连接池 Runbook",
         recognized=intent(IntentCategory.RUNBOOK_QUERY, entities={}),
@@ -184,7 +198,94 @@ def test_runbook_only_has_knowledge_but_no_operational_findings():
     diagnosis = outcome.diagnosis_build_result.diagnosis
     assert diagnosis.status == "runbook"
     assert diagnosis.evidence_refs == [] and diagnosis.confirmed_findings == []
+    assert diagnosis.hypotheses == []
+    assert all(action.related_evidence_ids == [] for action in diagnosis.recommended_actions)
     assert diagnosis.knowledge_refs[0].document_id == "RL-RB-DB-001"
+    assert diagnosis.knowledge_refs[0].chunk_id == "RL-RB-DB-001:c0000"
+    assert diagnosis.requires_approval is False
+    prompt = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "recommended_actions 每项字段恰好" in prompt
+    assert '"operational_evidence": []' in prompt
+
+
+@pytest.mark.parametrize("field,value", [
+    ("confirmed_findings", []),
+    ("hypotheses", []),
+    ("evidence_ids", ["RL-RB-DB-001:c0000"]),
+    ("knowledge_refs", []),
+])
+def test_runbook_rejects_fields_outside_its_internal_contract(field, value):
+    output = runbook_synthesis(**{field: value})
+    pipeline, _, _ = make_pipeline(fake_model(output))
+    outcome = run_pipeline(
+        pipeline, message="查连接池 Runbook",
+        recognized=intent(IntentCategory.RUNBOOK_QUERY, entities={}),
+    )
+    assert outcome.diagnosis_build_result.status == DiagnosisBuildStatus.VALIDATION_FAILED
+    assert outcome.diagnosis_build_result.diagnosis is None
+    assert "原来的 Markdown 回复" in outcome.result.response
+
+
+@pytest.mark.parametrize("field,source_id", [
+    ("related_evidence_ids", "RL-RB-DB-001:c0000"),
+    ("evidence_ids", "RL-HIST-20260814:c0000"),
+])
+def test_runbook_rejects_knowledge_ids_in_action_evidence_fields(field, source_id):
+    output = runbook_synthesis()
+    output["recommended_actions"][0][field] = [source_id]
+    pipeline, _, _ = make_pipeline(fake_model(output))
+    outcome = run_pipeline(
+        pipeline, message="查连接池 Runbook",
+        recognized=intent(IntentCategory.RUNBOOK_QUERY, entities={}),
+    )
+    assert outcome.diagnosis_build_result.status == DiagnosisBuildStatus.VALIDATION_FAILED
+    assert outcome.diagnosis_build_result.diagnosis is None
+
+
+def test_runbook_high_risk_action_still_requires_approval():
+    action = {"action": "回滚生产服务", "reason": "需人工核查变更后决定",
+              "risk_level": "high", "requires_approval": True}
+    pipeline, _, _ = make_pipeline(fake_model(runbook_synthesis(
+        recommended_actions=[action])))
+    outcome = run_pipeline(
+        pipeline, message="查连接池 Runbook",
+        recognized=intent(IntentCategory.RUNBOOK_QUERY, entities={}),
+    )
+    diagnosis = outcome.diagnosis_build_result.diagnosis
+    assert diagnosis is not None and diagnosis.requires_approval
+    assert diagnosis.recommended_actions[0].related_evidence_ids == []
+
+
+def test_diagnosis_mode_keeps_real_evidence_citations():
+    model = fake_model(lambda ids: synthesis(ids,
+        hypotheses=[{"statement": "可能是依赖故障", "evidence_ids": [ids[0]],
+                     "verification_steps": ["核查日志"]}],
+        recommended_actions=[{"action": "核查错误分布", "reason": "验证假设",
+                              "risk_level": "low", "requires_approval": False,
+                              "related_evidence_ids": [ids[0]]}],
+    ))
+    pipeline, _, _ = make_pipeline(model)
+    outcome = run_pipeline(pipeline)
+    diagnosis = outcome.diagnosis_build_result.diagnosis
+    assert diagnosis is not None and diagnosis.confirmed_findings
+    real_id = outcome.bundle.evidence[0].evidence_id
+    assert diagnosis.hypotheses[0].evidence_ids == [real_id]
+    assert diagnosis.recommended_actions[0].related_evidence_ids == [real_id]
+
+
+def test_runbook_fix_preserves_trace_steps():
+    pipeline, orchestrator, _ = make_pipeline(fake_model(runbook_synthesis()))
+    orchestrator.recognize_intent = AsyncMock(return_value=intent(
+        IntentCategory.RUNBOOK_QUERY, entities={}))
+    diagnosis = asyncio.run(run_diagnosis(
+        orchestrator=orchestrator, pipeline=pipeline,
+        message="查连接池 Runbook", user_id="u", conv_id="c",
+    ))
+    trace = diagnosis.outcome.trace
+    assert diagnosis.outcome.diagnosis_build_result.status == DiagnosisBuildStatus.SUCCESS
+    assert trace.overall_status == "success"
+    assert next(step for step in trace.steps if step.step_type == "query_logs").status == "skipped"
+    assert next(step for step in trace.steps if step.step_type == "diagnosis_assembly").status == "success"
 
 
 def test_eval_can_skip_structure_and_model_call():
