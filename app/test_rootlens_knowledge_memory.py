@@ -265,7 +265,8 @@ def bundle():
     tools = IncidentTools()
     ctx = QueryContext.build(service_name="payment-service", environment="demo",
                              anchor_time="2026-09-01T10:05:00+08:00", timezone="Asia/Shanghai",
-                             dataset_id="rootlens-demo", dataset_version="v1")
+                             dataset_id=tools.manifest.dataset_id,
+                             dataset_version=tools.manifest.dataset_version)
     from mcp.tool_manager import ToolResult
     data = asyncio.run(tools.query_logs(ctx.tool_params("query_logs")))
     return EvidenceBundle.from_results(ctx, {"query_logs": ToolResult(True, data, "query_logs")})

@@ -124,7 +124,7 @@ def test_six_cases_use_intent_recognizer_and_pipeline_with_real_evidence(
     assert incident.intent == "deployment_issue"
     assert incident.primary_agent == "application"
     assert incident.supporting_agents == ["database"]
-    assert "rootlens-demo:v1:INC-001:log:L001" in incident.evidence_ids
+    assert "rootlens-demo:v2:INC-001:log:L001" in incident.evidence_ids
     assert incident.tool_status == {name: "ok" for name in (
         "query_logs", "query_metrics", "query_deployments")}
     assert incident.runbook_ids == ["RL-RB-DB-001"]
@@ -142,7 +142,7 @@ def test_six_cases_use_intent_recognizer_and_pipeline_with_real_evidence(
     assert resource.intent == "resource_issue"
     assert resource.primary_agent == "infrastructure"
     assert resource.supporting_agents == []
-    assert "rootlens-demo:v1:INC-003:metric:M301" in resource.evidence_ids
+    assert "rootlens-demo:v2:INC-003:metric:M301" in resource.evidence_ids
 
     runbook = observations["runbook-db-pool"]
     assert runbook.tool_status == {}
@@ -162,7 +162,7 @@ def test_six_cases_use_intent_recognizer_and_pipeline_with_real_evidence(
         "query_deployments": "empty",
     }
     assert partial.evidence_types == ["metric"]
-    assert partial.evidence_ids == ["rootlens-demo:v1:INC-004:metric:M401"]
+    assert partial.evidence_ids == ["rootlens-demo:v2:INC-004:metric:M401"]
     assert all(call["memory_context"] == "" for call in pipeline_calls)
 
 
@@ -492,4 +492,4 @@ def test_labels_remain_outside_image_and_compose_mounts_read_only():
     app_root = Path(__file__).parent
     assert "datasets/evaluation/" in (app_root / ".dockerignore").read_text(encoding="utf-8")
     compose = (app_root / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "./datasets/evaluation/stage3-v2.json:/eval-data/stage3-v2.json:ro" in compose
+    assert "./datasets/evaluation/stage3-v3.json:/eval-data/stage3-v3.json:ro" in compose

@@ -18,7 +18,7 @@ from evaluation.rootlens_judge import DIMENSIONS
 
 
 SUITE_NAME = "rootlens-diagnosis"
-SUITE_VERSION = "stage3-v2"
+SUITE_VERSION = "stage3-v3"
 EVALUATION_SCHEMA_VERSION = "1"
 JUDGE_SCHEMA_VERSION = "2"
 DEFAULT_APPROVED_PATH = Path("/app/data/eval/rootlens/approved.json")

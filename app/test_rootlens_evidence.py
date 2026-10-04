@@ -9,7 +9,9 @@ import pytest
 from pydantic import ValidationError
 
 from core.evidence import Evidence, EvidenceBundle, QueryContext, WindowPolicy
-from mcp.incident_tools import DEFAULT_RUNTIME_ROOT, IncidentTools
+from evaluation.rootlens_baseline import suite_fingerprint
+from evaluation.rootlens_cases import load_rootlens_cases
+from mcp.incident_tools import DEFAULT_RUNTIME_ROOT, LEGACY_RUNTIME_ROOT, IncidentTools
 from mcp.tool_manager import MCPToolManager, Tool, ToolResult
 
 NOW = datetime(2026, 9, 2, tzinfo=timezone.utc)
@@ -19,7 +21,7 @@ TOOLS = ("query_logs", "query_metrics", "query_deployments")
 def context(**changes):
     values = dict(service_name="payment-service", environment="demo",
                   anchor_time="2026-09-01T10:05:00+08:00", timezone="Asia/Shanghai",
-                  dataset_id="rootlens-demo", dataset_version="v1")
+                  dataset_id="rootlens-demo", dataset_version="v2")
     values.update(changes)
     return QueryContext.build(**values)
 
@@ -99,7 +101,7 @@ def test_filters_limit_and_metric_interval(manager):
 @pytest.mark.parametrize("changes", [
     {"start_time": "10:05"}, {"start_time": "2026-09-01T10:05:00"},
     {"start_time": "2026-09-02T10:05:00+08:00"},
-    {"limit": True}, {"limit": 0}, {"dataset_version": "v2"},
+    {"limit": True}, {"limit": 0}, {"dataset_version": "v1"},
     {"service_name": " "}, {"unexpected": "expected_diagnosis"},
 ])
 def test_invalid_queries_are_failures_not_empty(manager, changes):
@@ -245,3 +247,50 @@ def test_existing_timeout_and_circuit_breaker_are_reused(manager):
     second = asyncio.run(manager.call("slow", {}))
     assert not first.success and not second.success
     assert "超时" in first.error and "熔断" in second.error
+
+
+def test_v2_snapshot_preserves_v1_and_changes_only_m401_summary():
+    old = json.loads((LEGACY_RUNTIME_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    new = json.loads((DEFAULT_RUNTIME_ROOT / "manifest.json").read_text(encoding="utf-8"))
+    assert old["dataset_version"] == "v1"
+    assert new == dict(old, dataset_version="v2")
+    for incident in old["incident_ids"]:
+        for filename in ("logs.json", "metrics.json", "deployments.json"):
+            before = json.loads((LEGACY_RUNTIME_ROOT / incident / filename).read_text(encoding="utf-8"))
+            after = json.loads((DEFAULT_RUNTIME_ROOT / incident / filename).read_text(encoding="utf-8"))
+            if incident == "INC-004" and filename == "metrics.json":
+                assert before[0]["summary"] == (
+                    "Shipping HTTP 5xx rate reached 12 percent; log source has no records")
+                assert after[0]["summary"] == "Shipping HTTP 5xx rate reached 12 percent"
+                assert before[0] == dict(after[0], summary=before[0]["summary"])
+            else:
+                assert after == before
+
+
+def test_v2_partial_evidence_keeps_empty_tool_states_separate(manager):
+    ctx = context(service_name="shipping-service", anchor_time="2026-09-01T13:05:00+08:00")
+    results = {name: call(manager, name, ctx) for name in TOOLS}
+    bundle = EvidenceBundle.from_results(ctx, results)
+    assert {name: state.status for name, state in bundle.tool_status.items()} == {
+        "query_logs": "empty", "query_metrics": "ok", "query_deployments": "empty"}
+    assert len(bundle.evidence) == 1
+    metric = bundle.evidence[0]
+    assert metric.evidence_id == "rootlens-demo:v2:INC-004:metric:M401"
+    assert metric.source_type == "metric" and metric.attributes.value == 12.0
+    assert metric.summary == "Shipping HTTP 5xx rate reached 12 percent"
+    assert "log" not in metric.summary.lower()
+
+
+def test_v3_suite_changes_evidence_ids_not_expected_labels():
+    evaluation = DEFAULT_RUNTIME_ROOT.parents[2] / "evaluation"
+    previous = load_rootlens_cases(evaluation / "stage3-v2.json")
+    current = load_rootlens_cases(evaluation / "stage3-v3.json")
+    assert suite_fingerprint(previous) != suite_fingerprint(current)
+    assert [case.case_id for case in previous] == [case.case_id for case in current]
+    for before, after in zip(previous, current):
+        assert before.runtime_inputs() == after.runtime_inputs()
+        expected = before.expected.model_dump()
+        expected["evidence_ids"] = ([item.replace("rootlens-demo:v1:", "rootlens-demo:v2:")
+                                    for item in expected["evidence_ids"]]
+                                   if expected["evidence_ids"] is not None else None)
+        assert after.expected.model_dump() == expected

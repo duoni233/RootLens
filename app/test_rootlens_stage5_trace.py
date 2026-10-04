@@ -1,5 +1,6 @@
 """Offline execution-trace checks; never call a paid model or live service."""
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,7 +12,7 @@ from core.diagnosis_trace import (
 from core.intent_recognizer import IntentCategory
 from mcp.tool_manager import MCPToolManager, Tool, ToolResult
 from test_rootlens_stage4_assembler import (
-    MESSAGE, fake_model, intent, make_pipeline, runbook_synthesis,
+    MESSAGE, fake_model, intent, make_pipeline, runbook_synthesis, synthesis,
 )
 
 
@@ -101,6 +102,42 @@ def test_empty_is_success_and_failed_tool_degrades_without_fabricated_evidence()
     assert steps(trace, "query_metrics")[0].status == "success"
     assert all(item.source_type == "metric" for item in outcome.bundle.evidence)
     assert trace.overall_status == "degraded" and trace.degraded
+
+
+def test_inc004_metric_and_empty_tool_states_keep_separate_sources():
+    model = fake_model(lambda ids: synthesis(ids, confirmed_findings=[{
+        "statement": "shipping-service HTTP 5xx rate reached 12 percent",
+        "evidence_ids": ids,
+    }], evidence_gaps=[{
+        "description": "日志和发布查询未返回记录",
+        "why_needed": "需要补充现场信息后才能判断原因",
+    }]))
+    pipeline, orchestrator, client = make_pipeline(model)
+    recognized = intent(entities={"service_name": ["shipping-service"],
+                                  "start_time": ["13:05"], "status_code": ["5xx"]})
+    outcome = run_traced(pipeline, orchestrator, recognized=recognized,
+                         message="shipping-service 13:05 开始 5xx 升高，帮我排查").outcome
+    diagnosis, trace = outcome.diagnosis_build_result.diagnosis, outcome.trace
+    assert diagnosis is not None and not diagnosis.degraded
+    assert diagnosis.tool_status == {"query_logs": "empty", "query_metrics": "ok",
+                                     "query_deployments": "empty"}
+    assert len(diagnosis.confirmed_findings) == 1
+    assert diagnosis.confirmed_findings[0].evidence_ids == [
+        "rootlens-demo:v2:INC-004:metric:M401"]
+    assert "log" not in diagnosis.confirmed_findings[0].statement.lower()
+    for name in ("query_logs", "query_deployments"):
+        step = steps(trace, name)[0]
+        assert (step.status, step.result_kind, step.evidence_ids) == (
+            "success", "empty", [])
+    assert trace.overall_status == "success" and not trace.degraded
+    prompt = client.messages.create.await_args.kwargs["messages"][0]["content"]
+    payload = json.loads(prompt.split("本次输入：\n", 1)[1])
+    assert payload["operational_evidence"] == [{
+        "evidence_id": "rootlens-demo:v2:INC-004:metric:M401",
+        "source_type": "metric",
+        "summary": "Shipping HTTP 5xx rate reached 12 percent",
+    }]
+    assert payload["tool_status"] == diagnosis.tool_status
 
 
 def test_degraded_tool_result_is_not_accepted_as_operational_evidence():

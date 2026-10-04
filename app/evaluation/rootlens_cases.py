@@ -9,7 +9,7 @@ from typing import Literal, Optional
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 
-DEFAULT_CASES = Path(__file__).resolve().parents[1] / "datasets" / "evaluation" / "stage3-v2.json"
+DEFAULT_CASES = Path(__file__).resolve().parents[1] / "datasets" / "evaluation" / "stage3-v3.json"
 ToolStatus = Literal["ok", "empty", "failed", "degraded"]
 
 

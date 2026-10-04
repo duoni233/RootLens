@@ -16,7 +16,8 @@ from core.evidence import (
 )
 from mcp.tool_manager import Tool
 
-DEFAULT_RUNTIME_ROOT = Path(__file__).resolve().parents[1] / "datasets" / "runtime"
+LEGACY_RUNTIME_ROOT = Path(__file__).resolve().parents[1] / "datasets" / "runtime"
+DEFAULT_RUNTIME_ROOT = Path(__file__).resolve().parents[1] / "datasets" / "snapshots" / "v2" / "runtime"
 SOURCE_FILES = {"log": "logs.json", "metric": "metrics.json",
                 "deployment": "deployments.json"}
 

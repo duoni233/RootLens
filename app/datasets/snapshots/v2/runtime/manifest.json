@@ -1,0 +1,7 @@
+{
+  "dataset_id": "rootlens-demo",
+  "dataset_version": "v2",
+  "simulated": true,
+  "timezone": "Asia/Shanghai",
+  "incident_ids": ["INC-001", "INC-002", "INC-003", "INC-004"]
+}

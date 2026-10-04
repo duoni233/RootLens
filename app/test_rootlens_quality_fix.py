@@ -57,7 +57,7 @@ def test_legacy_entities_and_router_paths_remain_available():
 def test_stage3_v1_is_preserved_and_v2_changes_only_adjudicated_label():
     dataset_dir = Path(__file__).parent / "datasets" / "evaluation"
     old = load_rootlens_cases(dataset_dir / "stage3-v1.json")
-    current = load_rootlens_cases()
+    current = load_rootlens_cases(dataset_dir / "stage3-v2.json")
     assert len(old) == len(current) == 6
     assert [case.case_id for case in old] == [case.case_id for case in current]
     assert old[0].expected.intent == "service_incident"
