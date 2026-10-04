@@ -67,4 +67,4 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 3. 结构化 IncidentDiagnosis、执行 Trace、测试专用故障注入与 Stage 6 历史保存/查询均已实施；历史 Evidence/Knowledge 仅保存来源引用，源数据变化后不能完整还原原始正文。INC-004 的 v2 数据来源边界已通过真实稳定性验收；新 v2/v3 评测结果已获批为 baseline。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
 
-Stage 5、Stage 6 已正式封板。Stage 7 控制台已部署，等待授权 History/Detail/Trace 的最终浏览器验收；六案例模拟数据、RAG extra-hit、Judge 校准不足及未做生产故障/负载研究等限制仍需保留。不要自动进入后续简历或部署美化阶段。
+Stage 5、Stage 6 已正式封板。Stage 7 控制台已部署；用户反馈的澄清补充、同页连续提问、错误令牌反馈和模拟环境标识已修复，前端 14/14、后端 317/317 与真实三轮浏览器诊断通过。仍等待 Owner 使用真实令牌完成浏览器 History/Detail/Trace 验收，故 Stage 7 尚未正式关闭。刷新页面后的未完成澄清续接尚未实现；六案例模拟数据、RAG extra-hit、Judge 校准不足及未做生产故障/负载研究等限制仍需保留。不要自动进入后续简历或部署美化阶段。

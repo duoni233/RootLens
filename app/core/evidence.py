@@ -232,8 +232,13 @@ def build_query_context(*, entities: dict, environment: Optional[str] = None,
                         message: str = "") -> tuple[Optional[QueryContext], Optional[str]]:
     """Resolve only explicit conditions, except the visible date assumption in demo."""
     services = list(dict.fromkeys(entities.get("service_name") or []))
+    if not services:
+        missing_time = not anchor_time and not entities.get("start_time")
+        detail = "，以及故障发生时间" if missing_time else ""
+        return None, ("请提供受影响的服务名（如 payment-service）" + detail +
+                      "，并说明看到的错误或具体现象。当前只能查询已登记的模拟服务，不能直接访问真实后台。")
     if len(services) != 1:
-        return None, "请提供一个受影响的服务名，例如 payment-service。"
+        return None, "识别到多个服务名，请确认本次需要调查哪一个服务。"
     env_in_text = re.findall(r"(?<![\w-])(demo|prod|staging)(?![\w-])", message, re.I)
     if len({value.lower() for value in env_in_text}) > 1 or (
         environment and env_in_text and environment.lower() != env_in_text[0].lower()

@@ -266,6 +266,27 @@ p {
   padding: 24px 0 30px;
   border-bottom: 1px solid #dce3df;
 }
+.diagnosis-form h2 {
+  font-size: 18px;
+  margin: 0 0 18px;
+}
+.pending-context {
+  border-left: 3px solid #76a993;
+  background: #f1f6f3;
+  padding: 12px 15px;
+  margin: 0 0 20px;
+  color: #42564a;
+}
+.pending-context strong {
+  font-size: 12px;
+}
+.pending-context p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 7px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
 .diagnosis-form > label,
 .access-panel label {
   display: block;
@@ -322,6 +343,25 @@ p {
   font-size: 11px;
   color: #687973;
   margin-bottom: 6px;
+}
+.demo-environment {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 155px;
+  gap: 4px;
+}
+.demo-environment .field-label {
+  font-size: 11px;
+  color: #687973;
+}
+.demo-environment strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+.demo-environment small {
+  font-size: 11px;
+  color: #687973;
 }
 .form-fields select,
 .form-fields input {

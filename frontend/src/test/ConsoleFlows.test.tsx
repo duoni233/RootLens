@@ -53,26 +53,104 @@ describe("console flows", () => {
     expect(new Headers(options.headers).has("X-RootLens-History-Token")).toBe(
       false,
     );
+    expect(screen.getByText("demo · 模拟数据")).toBeVisible();
+    expect(
+      screen.queryByRole("option", { name: "prod" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("continues a clarification with original details and the same conversation", async () => {
+    const clarification = {
+      ...chatResponse,
+      response: "请提供受影响的服务名和故障发生时间。",
+      clarification_required: true,
+      diagnosis: null,
+      diagnosis_status: "not_run",
+      run_id: "clarification-run",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(clarification))
+      .mockResolvedValueOnce(json(chatResponse));
+    vi.stubGlobal("fetch", fetchMock);
+    show(<NewDiagnosis />);
+    fireEvent.change(screen.getByLabelText("故障描述"), {
+      target: { value: "后台界面打不开" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /开始诊断/ }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("补充信息")).toBeVisible(),
+    );
+    expect(screen.getByText("后台界面打不开")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("补充信息"), {
+      target: { value: "payment-service 从 10:05 开始报 500" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /提交补充/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "已确认事实" })).toBeVisible(),
+    );
+    const second = JSON.parse(
+      String((fetchMock.mock.calls[1][1] as RequestInit).body),
+    );
+    expect(second.message).toContain("后台界面打不开");
+    expect(second.message).toContain("payment-service 从 10:05 开始报 500");
+    expect(second.conv_id).toBe("conv-1");
+    expect(second.environment).toBe("demo");
+  });
+
+  it("allows a second question without merging it and resets for a new diagnosis", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(chatResponse));
+    vi.stubGlobal("fetch", fetchMock);
+    show(<NewDiagnosis />);
+    fireEvent.change(screen.getByLabelText("故障描述"), {
+      target: { value: "payment-service 10:05 出现 5xx" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /开始诊断/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /继续诊断/ })).toBeVisible(),
+    );
+    fireEvent.change(screen.getByLabelText("故障描述"), {
+      target: { value: "另一个故障" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /继续诊断/ }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const second = JSON.parse(
+      String((fetchMock.mock.calls[1][1] as RequestInit).body),
+    );
+    expect(second.message).toBe("另一个故障");
+    expect(second.conv_id).toBe("conv-1");
+    fireEvent.click(screen.getByRole("button", { name: "新诊断" }));
+    fireEvent.change(screen.getByLabelText("故障描述"), {
+      target: { value: "独立事件" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /开始诊断/ }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const third = JSON.parse(
+      String((fetchMock.mock.calls[2][1] as RequestInit).body),
+    );
+    expect(third.conv_id).toBeUndefined();
   });
 
   it("requires an entered token, sends it only with history and can lock again", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      json({
-        items: [
-          {
-            run_id: "run-1",
-            created_at: detail.created_at,
-            service_name: detail.service_name,
-            intent: detail.intent,
-            primary_agent: detail.primary_agent,
-            diagnosis_status: "success",
-            degraded: false,
-            clarification_required: false,
-          },
-        ],
-        limit: 15,
-        offset: 0,
-      }),
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        json({
+          items: [
+            {
+              run_id: "run-1",
+              created_at: detail.created_at,
+              service_name: detail.service_name,
+              intent: detail.intent,
+              primary_agent: detail.primary_agent,
+              diagnosis_status: "success",
+              degraded: false,
+              clarification_required: false,
+            },
+          ],
+          limit: 15,
+          offset: 0,
+        }),
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
     show(<HistoryPage />, "/history");
@@ -107,6 +185,24 @@ describe("console flows", () => {
     );
     expect(sessionStorage.getItem("rootlens-history-token")).toBeNull();
     expect(screen.queryByText("payment-service")).not.toBeInTheDocument();
+  });
+
+  it("rejects an entered invalid token before unlocking and explains why", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({}, 401));
+    vi.stubGlobal("fetch", fetchMock);
+    show(<HistoryPage />, "/history");
+    fireEvent.change(screen.getByLabelText("访问令牌"), {
+      target: { value: "wrong-token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /解锁/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "ROOTLENS_HISTORY_API_TOKEN",
+      ),
+    );
+    expect(screen.getByRole("region", { name: "解锁诊断历史" })).toBeVisible();
+    expect(sessionStorage.getItem("rootlens-history-token")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("applies service, status, and degraded filters to the history request", async () => {

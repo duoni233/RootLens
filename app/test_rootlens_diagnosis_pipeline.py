@@ -181,6 +181,15 @@ def test_chinese_date_resolves_without_demo_date_guess():
     assert query.anchor_time.isoformat() == "2026-09-01T10:05:00+08:00"
 
 
+def test_missing_service_and_time_clarification_lists_both_conditions():
+    query, question = build_query_context(
+        entities={}, environment="demo", message="后台界面打不开",
+    )
+    assert query is None
+    assert "服务名" in question and "故障发生时间" in question
+    assert "模拟服务" in question
+
+
 def test_insufficient_alert_does_not_acquire(setup_pipeline, monkeypatch):
     pipeline, manager, _, _, _ = setup_pipeline
     call = AsyncMock(side_effect=AssertionError("must not acquire"))

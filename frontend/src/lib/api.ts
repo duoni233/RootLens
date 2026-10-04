@@ -21,7 +21,8 @@ export class ApiError extends Error {
 
 export function apiErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 401) return "历史访问未授权，请重新输入访问令牌。";
+    if (error.status === 401)
+      return "访问令牌不匹配。请使用 ROOTLENS_HISTORY_API_TOKEN，而不是模型 API Key。";
     if (error.status === 404) return "记录不存在，或历史接口尚未启用。";
     if (error.status === 409) return "该记录使用了当前界面不支持的数据版本。";
     if (error.status === 503) return "后端服务或历史存储暂不可用。";
