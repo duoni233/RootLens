@@ -24,6 +24,8 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 
 2026-10-04：Stage 5-3.2B 保留原 `rootlens-demo:v1`，新增 v2 快照，仅从 INC-004 M401 指标摘要移除跨来源的日志状态；评测集另存 `stage3-v3`，原语义标签不变。全量离线测试 **286 passed、0 skipped**，新容器健康。首次真实 INC-004 调用中证据/工具状态正确，但模型供应商返回 HTTP 402 `Insufficient Balance`，结构化诊断 `assembler_failed`；按验收规则停止后续两次与六案例真实评测。旧 baseline 与新 suite 正确报告不兼容，未 promote。**Stage 5 仍未关闭**。详见 `23-stage5-3-2b-partial-evidence-fix.md`。
 
+2026-10-04：供应商余额恢复后重启应用，INC-004 三次独立真实 `/chat` **3/3** 结构化成功，M401 仅支持 12% 的 5xx 事实，日志/发布空结果仍是工具状态。新 v2/v3 六案例真实评测 **6/6** 结构化成功、Judge **6/6** 有效；Stage 5 Trace/故障注入离线复测 **32/32** 通过，应用健康。完整原始评测在 `24-stage5-3-2b-evaluation-raw.json`，人工审查与已知限制在 `25-stage5-3-2b-live-acceptance.md`。旧 baseline 正确报告版本不兼容、未修改或 promote。**Stage 5 技术验收已达到供 Owner 决定封板的状态，但尚未正式关闭，也未进入 Stage 6。**
+
 ## 已完成
 
 | 模块 | 原版 EchoMind | RootLens 当前实现 | 验证 |
@@ -54,7 +56,7 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 
 1. 生产数据源接入、大规模回归评测和根因准确率仍未验证；当前六案例均为一致性模拟数据。
 2. RAG 仍有与当前故障不直接相关的额外 Runbook 命中；Judge v2 未经大规模人工校准。当前意图兼容接口配置仍禁用 Embedding，实际启用 LLM 与 Pattern 两路。
-3. 结构化 IncidentDiagnosis、执行 Trace 和测试专用故障注入已实施；完整 Trace 的持久化/查询 API 尚未实施。INC-004 的 v2 数据来源边界已修复并通过离线回归，但真实稳定性验收被模型供应商余额不足阻断。
+3. 结构化 IncidentDiagnosis、执行 Trace 和测试专用故障注入已实施；完整 Trace 的持久化/查询 API 尚未实施。INC-004 的 v2 数据来源边界已通过真实稳定性验收；新 v2/v3 评测结果尚未获批为 baseline。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
 
-Stage 5-3.2B 的离线修复已完成，但 Stage 5 未正式封板；余额恢复后按 `23-stage5-3-2b-partial-evidence-fix.md` 继续真实验收。
+Stage 5-3.2B 的真实验收已完成，但 Stage 5 未正式封板。下一步由 Owner 审阅 `25-stage5-3-2b-live-acceptance.md` 和原始报告，决定是否批准新 baseline 并正式关闭 Stage 5。
