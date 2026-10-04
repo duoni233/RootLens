@@ -525,7 +525,9 @@ async def list_diagnoses(
         offset: int = Query(default=0, ge=0),
         service_name: Optional[str] = None,
         diagnosis_status: Optional[DiagnosisBuildStatus] = None,
-        degraded: Optional[bool] = None):
+        degraded: Optional[bool] = None,
+        service_missing: Optional[bool] = None,
+        clarification_required: Optional[bool] = None):
     repository = _require_history_repository()
     try:
         runs = await asyncio.to_thread(
@@ -533,6 +535,8 @@ async def list_diagnoses(
             service_name=service_name,
             diagnosis_status=diagnosis_status.value if diagnosis_status else None,
             degraded=degraded,
+            service_missing=service_missing,
+            clarification_required=clarification_required,
         )
     except UnsupportedSchemaVersion:
         raise HTTPException(409, "诊断历史版本不受支持") from None

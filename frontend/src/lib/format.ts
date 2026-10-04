@@ -28,7 +28,7 @@ export function displayStatus(status: string): string {
     assembler_failed: "生成失败",
     saved: "已保存",
     disabled: "未启用",
-    clarification: "待澄清",
+    clarification: "待补充信息",
   };
   return labels[status] ?? status.replaceAll("_", " ");
 }

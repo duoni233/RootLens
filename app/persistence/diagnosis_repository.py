@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import Boolean, Index, String, Text, create_engine, select
+from sqlalchemy import Boolean, Index, String, Text, create_engine, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -150,16 +150,25 @@ class DiagnosisRepository:
     def list_runs(self, *, limit: int = 20, offset: int = 0,
                   service_name: str | None = None,
                   diagnosis_status: str | None = None,
-                  degraded: bool | None = None) -> list[DiagnosisRun]:
+                  degraded: bool | None = None,
+                  service_missing: bool | None = None,
+                  clarification_required: bool | None = None) -> list[DiagnosisRun]:
         if not 1 <= limit <= 100 or offset < 0:
             raise ValueError("limit must be 1..100 and offset must be nonnegative")
         stmt = select(_RunRow)
-        if service_name is not None:
-            stmt = stmt.where(_RunRow.service_name == service_name)
+        if service_name and service_name.strip():
+            stmt = stmt.where(func.lower(_RunRow.service_name).contains(
+                service_name.strip().lower(), autoescape=True))
+        if service_missing is True:
+            stmt = stmt.where(_RunRow.service_name.is_(None))
+        elif service_missing is False:
+            stmt = stmt.where(_RunRow.service_name.is_not(None))
         if diagnosis_status is not None:
             stmt = stmt.where(_RunRow.diagnosis_status == diagnosis_status)
         if degraded is not None:
             stmt = stmt.where(_RunRow.degraded == degraded)
+        if clarification_required is not None:
+            stmt = stmt.where(_RunRow.clarification_required == clarification_required)
         stmt = stmt.order_by(_RunRow.created_at.desc(), _RunRow.run_id.desc())
         try:
             with self._sessions() as session:

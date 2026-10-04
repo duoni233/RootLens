@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Filter,
   LockKeyhole,
+  RotateCcw,
   Search,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -11,20 +12,29 @@ import { HistoryAccess } from "../components/HistoryAccess";
 import { StatusBadge } from "../components/StatusBadge";
 import { useHistoryAccess } from "../historyAccess";
 import { api, apiErrorMessage, ApiError } from "../lib/api";
-import { buildStatuses, formatDate, runStatus } from "../lib/format";
+import {
+  buildStatuses,
+  displayStatus,
+  formatDate,
+  runStatus,
+} from "../lib/format";
 import type {
   DiagnosisBuildStatus,
   HistoryPage as HistoryPageResult,
 } from "../lib/types";
 
 const LIMIT = 15;
+type StatusFilter = DiagnosisBuildStatus | "clarification" | "";
 
 export function HistoryPage() {
   const { token, lock } = useHistoryAccess();
   const [serviceInput, setServiceInput] = useState("");
   const [service, setService] = useState("");
-  const [status, setStatus] = useState<DiagnosisBuildStatus | "">("");
+  const [status, setStatus] = useState<StatusFilter>("");
   const [degraded, setDegraded] = useState<"" | "true" | "false">("");
+  const [serviceMissing, setServiceMissing] = useState<"" | "true" | "false">(
+    "",
+  );
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState<HistoryPageResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -43,8 +53,10 @@ export function HistoryPage() {
         {
           limit: LIMIT,
           offset,
-          service_name: service,
-          diagnosis_status: status,
+          service_name: serviceMissing === "true" ? "" : service,
+          service_missing: serviceMissing,
+          diagnosis_status: status === "clarification" ? "" : status,
+          clarification_required: status === "clarification" ? "true" : "",
           degraded,
         },
         token,
@@ -65,7 +77,16 @@ export function HistoryPage() {
     return () => {
       active = false;
     };
-  }, [token, offset, service, status, degraded, lock]);
+  }, [token, offset, service, serviceMissing, status, degraded, lock]);
+
+  function clearFilters() {
+    setServiceInput("");
+    setService("");
+    setServiceMissing("");
+    setStatus("");
+    setDegraded("");
+    setOffset(0);
+  }
 
   return (
     <div className="page history-page">
@@ -96,29 +117,50 @@ export function HistoryPage() {
               <Search size={16} />
               <input
                 aria-label="按服务筛选"
-                placeholder="服务名称"
+                placeholder="服务名包含，例如 pay"
                 value={serviceInput}
                 onChange={(event) => setServiceInput(event.target.value)}
+                disabled={serviceMissing === "true"}
               />
             </div>
             <label>
-              <span>构建状态</span>
+              <span>服务识别</span>
               <select
-                value={status}
+                value={serviceMissing}
                 onChange={(event) => {
-                  setStatus(event.target.value as DiagnosisBuildStatus | "");
+                  const next = event.target.value as typeof serviceMissing;
+                  setServiceMissing(next);
+                  if (next === "true") {
+                    setServiceInput("");
+                    setService("");
+                  }
                   setOffset(0);
                 }}
               >
                 <option value="">全部</option>
+                <option value="false">已识别服务</option>
+                <option value="true">服务待确认</option>
+              </select>
+            </label>
+            <label>
+              <span>诊断状态</span>
+              <select
+                value={status}
+                onChange={(event) => {
+                  setStatus(event.target.value as StatusFilter);
+                  setOffset(0);
+                }}
+              >
+                <option value="">全部</option>
+                <option value="clarification">待补充信息</option>
                 {buildStatuses.map((value) => (
                   <option key={value} value={value}>
-                    {value}
+                    {displayStatus(value)}
                   </option>
                 ))}
               </select>
             </label>
-            <label>
+            <label title="部分工具、Agent 或结构化诊断失败，但系统仍可能返回了结果；不等于待补充信息。">
               <span>降级</span>
               <select
                 value={degraded}
@@ -134,6 +176,13 @@ export function HistoryPage() {
             </label>
             <button className="button-secondary" type="submit">
               <Filter size={16} /> 筛选
+            </button>
+            <button
+              className="button-quiet"
+              type="button"
+              onClick={clearFilters}
+            >
+              <RotateCcw size={15} /> 清空筛选
             </button>
           </form>
           {error && (
@@ -167,7 +216,7 @@ export function HistoryPage() {
                   <tr key={run.run_id}>
                     <td>{formatDate(run.created_at)}</td>
                     <td className="strong-cell">
-                      {run.service_name || "待确认"}
+                      {run.service_name || "服务待确认"}
                     </td>
                     <td>
                       <code>{run.intent}</code>

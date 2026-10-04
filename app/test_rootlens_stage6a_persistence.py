@@ -155,6 +155,14 @@ def test_list_sorting_pagination_and_filters(repository):
     assert [run.run_id for run in repository.list_runs(limit=1, offset=1)] == [second.run_id]
     assert [run.run_id for run in repository.list_runs(service_name="payment-service")] == [
         second.run_id, first.run_id]
+    assert [run.run_id for run in repository.list_runs(service_name="PAY")] == [
+        second.run_id, first.run_id]
+    assert repository.list_runs(service_name="%") == []
+    assert [run.run_id for run in repository.list_runs(service_missing=True)] == [third.run_id]
+    assert [run.run_id for run in repository.list_runs(service_missing=False)] == [
+        second.run_id, first.run_id]
+    assert [run.run_id for run in repository.list_runs(clarification_required=True)] == [
+        third.run_id]
     assert repository.list_runs(service_name="other-service") == []
     assert [run.run_id for run in repository.list_runs(
         diagnosis_status=DiagnosisBuildStatus.SUCCESS.value)] == [

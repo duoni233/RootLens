@@ -147,4 +147,6 @@ export interface HistoryFilters {
   service_name?: string;
   diagnosis_status?: DiagnosisBuildStatus | "";
   degraded?: "" | "true" | "false";
+  service_missing?: "" | "true" | "false";
+  clarification_required?: "" | "true" | "false";
 }

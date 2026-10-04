@@ -216,9 +216,9 @@ describe("console flows", () => {
       expect(screen.getByText("没有符合条件的历史记录。")).toBeVisible(),
     );
     fireEvent.change(screen.getByLabelText("按服务筛选"), {
-      target: { value: "order-service" },
+      target: { value: "order" },
     });
-    fireEvent.change(screen.getByLabelText("构建状态"), {
+    fireEvent.change(screen.getByLabelText("诊断状态"), {
       target: { value: "parse_failed" },
     });
     fireEvent.change(screen.getByLabelText("降级"), {
@@ -229,12 +229,45 @@ describe("console flows", () => {
       expect(
         fetchMock.mock.calls.some(
           ([url]) =>
-            String(url).includes("service_name=order-service") &&
+            String(url).includes("service_name=order") &&
             String(url).includes("diagnosis_status=parse_failed") &&
             String(url).includes("degraded=true"),
         ),
       ).toBe(true),
     );
+  });
+
+  it("filters unknown services and pending clarifications, then clears filters", async () => {
+    sessionStorage.setItem("rootlens-history-token", "token");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(json({ items: [], limit: 15, offset: 0 }));
+    vi.stubGlobal("fetch", fetchMock);
+    show(<HistoryPage />, "/history");
+    fireEvent.change(screen.getByLabelText("服务识别"), {
+      target: { value: "true" },
+    });
+    expect(screen.getByLabelText("按服务筛选")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("诊断状态"), {
+      target: { value: "clarification" },
+    });
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([url]) =>
+            String(url).includes("service_missing=true") &&
+            String(url).includes("clarification_required=true") &&
+            !String(url).includes("diagnosis_status="),
+        ),
+      ).toBe(true),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "清空筛选" }));
+    await waitFor(() => {
+      const lastUrl = String(fetchMock.mock.calls.at(-1)?.[0]);
+      expect(lastUrl).not.toContain("service_missing=");
+      expect(lastUrl).not.toContain("clarification_required=");
+    });
+    expect(screen.getByLabelText("按服务筛选")).toBeEnabled();
   });
 
   it("loads detail and trace separately, showing only persisted references", async () => {
@@ -256,6 +289,12 @@ describe("console flows", () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/未归档完整日志/)).toBeVisible();
+    expect(screen.getByRole("region", { name: "原始问题" })).toHaveTextContent(
+      detail.original_message,
+    );
+    expect(
+      screen.getByRole("link", { name: /基于此记录追问/ }),
+    ).toHaveAttribute("href", "/?from=run-1");
     fireEvent.click(screen.getByRole("tab", { name: "执行轨迹" }));
     await waitFor(() =>
       expect(
@@ -263,6 +302,100 @@ describe("console flows", () => {
       ).toHaveTextContent("tool_timeout"),
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts a new diagnosis from history without reusing an expired conversation", async () => {
+    sessionStorage.setItem("rootlens-history-token", "token");
+    const fetchMock = vi
+      .fn()
+      .mockImplementation((url: string) =>
+        Promise.resolve(
+          json(url.startsWith("/diagnoses/") ? detail : chatResponse),
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    show(<NewDiagnosis />, "/?from=run-1");
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "历史上下文" })).toBeVisible(),
+    );
+    expect(screen.getByText(/不会恢复旧会话/)).toBeVisible();
+    fireEvent.change(screen.getByLabelText("新的追问"), {
+      target: { value: "这条诊断需要先做什么？" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /开始诊断/ }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const first = JSON.parse(
+      String((fetchMock.mock.calls[1][1] as RequestInit).body),
+    );
+    expect(first.message).toContain(detail.original_message);
+    expect(first.message).toContain(detail.diagnosis?.summary);
+    expect(first.message).toContain("这条诊断需要先做什么？");
+    expect(first.conv_id).toBeUndefined();
+    expect(first.environment).toBe("demo");
+    expect(
+      new Headers((fetchMock.mock.calls[1][1] as RequestInit).headers).has(
+        "X-RootLens-History-Token",
+      ),
+    ).toBe(false);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /继续诊断/ })).toBeVisible(),
+    );
+    fireEvent.change(screen.getByLabelText("故障描述"), {
+      target: { value: "还有哪些证据缺口？" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /继续诊断/ }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const second = JSON.parse(
+      String((fetchMock.mock.calls[2][1] as RequestInit).body),
+    );
+    expect(second.message).toBe("还有哪些证据缺口？");
+    expect(second.conv_id).toBe("conv-1");
+  });
+
+  it("carries a historical clarification into its new follow-up", async () => {
+    sessionStorage.setItem("rootlens-history-token", "token");
+    const saved = {
+      ...detail,
+      original_message: "后台界面打不开",
+      diagnosis: null,
+      clarification_required: true,
+      diagnosis_status: "not_run",
+    };
+    const clarification = {
+      ...chatResponse,
+      clarification_required: true,
+      diagnosis: null,
+      diagnosis_status: "not_run",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(saved))
+      .mockResolvedValueOnce(json(clarification))
+      .mockResolvedValueOnce(json(chatResponse));
+    vi.stubGlobal("fetch", fetchMock);
+    show(<NewDiagnosis />, "/?from=run-1");
+    await waitFor(() =>
+      expect(screen.getByLabelText("新的追问")).toBeVisible(),
+    );
+    fireEvent.change(screen.getByLabelText("新的追问"), {
+      target: { value: "补充服务信息" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /开始诊断/ }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("补充信息")).toBeVisible(),
+    );
+    fireEvent.change(screen.getByLabelText("补充信息"), {
+      target: { value: "payment-service 10:05 出现 500" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /提交补充/ }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const followUp = JSON.parse(
+      String((fetchMock.mock.calls[2][1] as RequestInit).body),
+    );
+    expect(followUp.message).toContain("后台界面打不开");
+    expect(followUp.message).toContain("补充服务信息");
+    expect(followUp.message).toContain("payment-service 10:05 出现 500");
+    expect(followUp.conv_id).toBe("conv-1");
   });
 
   it("maps backend and network failures without exposing response bodies", async () => {

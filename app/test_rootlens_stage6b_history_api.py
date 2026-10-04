@@ -171,6 +171,15 @@ def test_list_pagination_filters_and_invalid_inputs(runtime):
     match = request(main.app, "GET", "/diagnoses?service_name=payment-service",
                     headers=HEADERS)
     assert [item["run_id"] for item in match.json()["items"]] == [first["run_id"]]
+    partial = request(main.app, "GET", "/diagnoses?service_name=PAY",
+                      headers=HEADERS)
+    assert [item["run_id"] for item in partial.json()["items"]] == [first["run_id"]]
+    missing = request(main.app, "GET", "/diagnoses?service_missing=true",
+                      headers=HEADERS)
+    assert [item["run_id"] for item in missing.json()["items"]] == [second["run_id"]]
+    clarification = request(main.app, "GET", "/diagnoses?clarification_required=true",
+                            headers=HEADERS)
+    assert [item["run_id"] for item in clarification.json()["items"]] == [second["run_id"]]
     filtered = request(main.app, "GET", "/diagnoses?diagnosis_status=success&degraded=false",
                        headers=HEADERS)
     assert len(filtered.json()["items"]) == 2

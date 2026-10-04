@@ -1,4 +1,4 @@
-import { ArrowLeft, LockKeyhole } from "lucide-react";
+import { ArrowLeft, ArrowRight, LockKeyhole } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { DiagnosisView } from "../components/DiagnosisView";
@@ -115,6 +115,27 @@ export function DetailPage() {
             </div>
           )}
           {loading && <p className="loading-line">加载中…</p>}
+          {!loading && detail && view === "diagnosis" && (
+            <section className="history-original" aria-label="原始问题">
+              <div className="history-original-heading">
+                <h2>原始问题</h2>
+                {(detail.environment === "demo" || !detail.environment) && (
+                  <Link
+                    className="inline-link"
+                    to={`/?from=${encodeURIComponent(detail.run_id)}`}
+                  >
+                    基于此记录追问 <ArrowRight size={15} />
+                  </Link>
+                )}
+              </div>
+              <p>{detail.original_message}</p>
+              {detail.environment && detail.environment !== "demo" && (
+                <small>
+                  此记录不属于 demo 数据环境，当前控制台不能基于它发起追问。
+                </small>
+              )}
+            </section>
+          )}
           {!loading && detail && view === "diagnosis" && (
             <DiagnosisView
               diagnosis={detail.diagnosis}

@@ -699,6 +699,9 @@ p {
   width: 190px;
   height: 34px;
 }
+.filter-search input:disabled {
+  background: transparent;
+}
 .history-toolbar {
   display: flex;
   justify-content: space-between;
@@ -839,6 +842,37 @@ p {
 .view-tabs button.active {
   color: #247b5d;
   border-color: #287b63;
+}
+.history-original,
+.history-source {
+  padding: 20px 0;
+  border-bottom: 1px solid #dce3df;
+}
+.history-original-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+.history-original-heading h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.history-original p,
+.history-source p {
+  margin: 0 0 8px;
+  color: #485a50;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.history-original small,
+.history-source small {
+  color: #7d8b82;
+  font-size: 11px;
 }
 .loading-line {
   color: #86958c;
