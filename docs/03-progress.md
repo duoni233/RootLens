@@ -28,6 +28,8 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 
 2026-10-04：**Stage 5 经 Owner 人工批准后正式关闭（COMPLETED）。** 使用已保存的 v3/v2 六案例原始报告显式 promote；新 approved baseline ID 为 `f79e1d913c7146088805290f7e1580e3`，旧 v2/v1 baseline `9bd1b2a57d5b411f87541bdcba521af4` 的历史快照保持原样。新 pointer 与历史快照哈希一致；用同一保存报告进行不调用模型的比较，`compatible=true`、`regression.status=compared`，可比较项 delta 均为 0。交付范围包含 DiagnosisTrace v1、受控故障注入、Runbook 结构化诊断稳定性修复、partial-evidence 来源归因修复、`rootlens-demo:v2`、`stage3-v3` 及新 baseline。完整离线回归 286/286，Stage 5 Trace/可靠性回归 32/32；已保存真实评测结构化 6/6、Judge v2 有效 6/6。详见 `26-stage5-final-closure.md`。这些仍只是六条模拟案例，不代表生产准确率；Stage 6 未开始。
 
+2026-10-04：**Stage 6A Persistence Foundation 完成，Stage 6B 尚未开始。** 增加独立 `DiagnosisRun v1` 契约、SQLite/SQLAlchemy 单表 Repository 与结果投影，保存 Markdown、结构化诊断和 Trace 快照；不在共享的 `run_diagnosis` 内写历史，评测运行不能进入普通历史。17 项新增测试通过，含隔离 Redis 的全量离线回归 **303 passed、0 skipped**。未接 `/chat`、未新增 History API、未部署新版应用或前端；已批准的 Stage 5 baseline 未变。详见 `27-stage6a-persistence-foundation.md`。
+
 ## 已完成
 
 | 模块 | 原版 EchoMind | RootLens 当前实现 | 验证 |
@@ -61,4 +63,4 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 3. 结构化 IncidentDiagnosis、执行 Trace 和测试专用故障注入已实施；完整 Trace 的持久化/查询 API 尚未实施。INC-004 的 v2 数据来源边界已通过真实稳定性验收；新 v2/v3 评测结果已获批为 baseline。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
 
-Stage 5 已正式封板。后续可评估 Stage 6，但本次不实现 Stage 6；仍须保留六案例模拟数据、RAG extra-hit、Judge 校准不足、未做生产故障/负载研究等非阻断限制。
+Stage 5 已正式封板，Stage 6A 的存储基础已完成。下一步是 Stage 6B：明确 `/chat` 保存失败语义和历史访问边界，接入持久化、History API 与 Docker 验收；不要将当前 6A 误认为已有可用的历史界面。六案例模拟数据、RAG extra-hit、Judge 校准不足、未做生产故障/负载研究等限制仍需保留。
