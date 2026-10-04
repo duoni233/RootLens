@@ -32,6 +32,8 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 
 2026-10-04：**Stage 6B 技术验收完成，待 Owner 人工确认正式关闭 Stage 6。** 普通 `/chat` 完成后保存 `DiagnosisRun`，返回真实的 `run_id/persistence_status`；历史列表、详情和独立 Trace API 均有默认关闭的开关及令牌保护。SQLite 独立 Docker 卷在应用重启与重建后保留记录，真实模型 smoke 保存和读回成功；数据库失败不拖垮诊断。新增 13 项测试，Stage 1-6 全量离线回归 **316 passed、0 skipped**，已批准的 Stage 5 baseline 哈希未变。详见 `28-stage6b-runtime-history-acceptance.md`。尚无前端、用户级权限或生产负载验收。
 
+2026-10-04：**Stage 6 经 Owner 人工验收，正式关闭（COMPLETED）。** Stage 7 已实现 React/TypeScript/Vite 诊断控制台，通过现有 Nginx 的 `/console/` 同源访问。真实浏览器新诊断保存成功；前端 **11 passed**、后端 **316 passed**，五服务 healthy，baseline 未变。授权 History/Detail/Trace 的浏览器验收仍待输入本地私有令牌的许可，因此 Stage 7 **尚未正式关闭**。详见 `29-stage7-diagnosis-console-acceptance.md`。
+
 ## 已完成
 
 | 模块 | 原版 EchoMind | RootLens 当前实现 | 验证 |
@@ -65,4 +67,4 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 3. 结构化 IncidentDiagnosis、执行 Trace、测试专用故障注入与 Stage 6 历史保存/查询均已实施；历史 Evidence/Knowledge 仅保存来源引用，源数据变化后不能完整还原原始正文。INC-004 的 v2 数据来源边界已通过真实稳定性验收；新 v2/v3 评测结果已获批为 baseline。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
 
-Stage 5 已正式封板，Stage 6B 技术验收完成，等待 Owner 审阅后决定是否正式关闭 Stage 6。此时已有受控 History API，但还没有历史前端；六案例模拟数据、RAG extra-hit、Judge 校准不足及未做生产故障/负载研究等限制仍需保留。不要自动进入 Stage 7。
+Stage 5、Stage 6 已正式封板。Stage 7 控制台已部署，等待授权 History/Detail/Trace 的最终浏览器验收；六案例模拟数据、RAG extra-hit、Judge 校准不足及未做生产故障/负载研究等限制仍需保留。不要自动进入后续简历或部署美化阶段。
