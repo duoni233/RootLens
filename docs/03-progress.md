@@ -30,6 +30,8 @@ EchoMind 原版是客服多 Agent 运行时。RootLens 复用运行时骨架，�
 
 2026-10-04：**Stage 6A Persistence Foundation 完成，Stage 6B 尚未开始。** 增加独立 `DiagnosisRun v1` 契约、SQLite/SQLAlchemy 单表 Repository 与结果投影，保存 Markdown、结构化诊断和 Trace 快照；不在共享的 `run_diagnosis` 内写历史，评测运行不能进入普通历史。17 项新增测试通过，含隔离 Redis 的全量离线回归 **303 passed、0 skipped**。未接 `/chat`、未新增 History API、未部署新版应用或前端；已批准的 Stage 5 baseline 未变。详见 `27-stage6a-persistence-foundation.md`。
 
+2026-10-04：**Stage 6B 技术验收完成，待 Owner 人工确认正式关闭 Stage 6。** 普通 `/chat` 完成后保存 `DiagnosisRun`，返回真实的 `run_id/persistence_status`；历史列表、详情和独立 Trace API 均有默认关闭的开关及令牌保护。SQLite 独立 Docker 卷在应用重启与重建后保留记录，真实模型 smoke 保存和读回成功；数据库失败不拖垮诊断。新增 13 项测试，Stage 1-6 全量离线回归 **316 passed、0 skipped**，已批准的 Stage 5 baseline 哈希未变。详见 `28-stage6b-runtime-history-acceptance.md`。尚无前端、用户级权限或生产负载验收。
+
 ## 已完成
 
 | 模块 | 原版 EchoMind | RootLens 当前实现 | 验证 |
@@ -60,7 +62,7 @@ python -m pytest -q -p no:cacheprovider test_rootlens_first_slice.py
 
 1. 生产数据源接入、大规模回归评测和根因准确率仍未验证；当前六案例均为一致性模拟数据。
 2. RAG 仍有与当前故障不直接相关的额外 Runbook 命中；Judge v2 未经大规模人工校准。当前意图兼容接口配置仍禁用 Embedding，实际启用 LLM 与 Pattern 两路。
-3. 结构化 IncidentDiagnosis、执行 Trace 和测试专用故障注入已实施；完整 Trace 的持久化/查询 API 尚未实施。INC-004 的 v2 数据来源边界已通过真实稳定性验收；新 v2/v3 评测结果已获批为 baseline。
+3. 结构化 IncidentDiagnosis、执行 Trace、测试专用故障注入与 Stage 6 历史保存/查询均已实施；历史 Evidence/Knowledge 仅保存来源引用，源数据变化后不能完整还原原始正文。INC-004 的 v2 数据来源边界已通过真实稳定性验收；新 v2/v3 评测结果已获批为 baseline。
 4. 清理残留的 EchoMind 客服意图、提示、数据和文档；决定原用户画像是否适合故障诊断场景。
 
-Stage 5 已正式封板，Stage 6A 的存储基础已完成。下一步是 Stage 6B：明确 `/chat` 保存失败语义和历史访问边界，接入持久化、History API 与 Docker 验收；不要将当前 6A 误认为已有可用的历史界面。六案例模拟数据、RAG extra-hit、Judge 校准不足、未做生产故障/负载研究等限制仍需保留。
+Stage 5 已正式封板，Stage 6B 技术验收完成，等待 Owner 审阅后决定是否正式关闭 Stage 6。此时已有受控 History API，但还没有历史前端；六案例模拟数据、RAG extra-hit、Judge 校准不足及未做生产故障/负载研究等限制仍需保留。不要自动进入 Stage 7。

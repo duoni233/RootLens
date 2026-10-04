@@ -30,6 +30,8 @@ import asyncio
 import logging
 import os
 import pathlib
+import re
+import secrets
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -43,12 +45,16 @@ if _ROOT not in sys.path:
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Response, UploadFile, File
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import AwareDatetime, BaseModel, Field
 from core.incident_diagnosis import DiagnosisBuildStatus, IncidentDiagnosis
+from core.diagnosis_trace import DiagnosisTrace
 from evaluation.rootlens_cases import EvaluationCase, load_rootlens_cases
+from persistence.diagnosis_persistence import build_diagnosis_run
+from persistence.diagnosis_repository import DiagnosisRepository, UnsupportedSchemaVersion
+from persistence.history_api import HistoryDetail, HistoryPage, HistorySummary
 
 load_dotenv()
 
@@ -80,6 +86,30 @@ _evaluator    = None
 _rootlens_evaluator = None
 _skill_manager = None
 _diagnosis_pipeline = None
+_history_repository = None
+_history_enabled = False
+_history_api_enabled = False
+_history_api_token = ""
+
+
+def _bool_env(name: str, default: str) -> bool:
+    value = os.getenv(name, default).strip().lower()
+    if value not in {"true", "false", "1", "0"}:
+        raise ValueError(f"{name} must be true/false or 1/0")
+    return value in {"true", "1"}
+
+
+_HISTORY_SECRET_PATTERN = re.compile(
+    r"(?i)(?:\b(?:password|passwd|pwd|api[_-]?key|authorization|secret|token)\b"
+    r"\s*[:=]\s*[^\s,;]+|\bbearer\s+[^\s,;]+|密码\s*(?:是|为|:|：|=)\s*[^\s,;]+)"
+)
+
+
+def _assert_history_safe(run) -> None:
+    if _HISTORY_SECRET_PATTERN.search(run.model_dump_json()):
+        raise ValueError("diagnosis history contains credential-like content")
+
+
 #专门负责“读配置”，获得dict形式的配置包
 #把这些值整理成一个配置包
 # cfg 是这个配置包
@@ -100,7 +130,8 @@ def _anthropic_cfg() -> Dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _rootlens_evaluator, _skill_manager, _diagnosis_pipeline#我要修改外面的全局变量，需要做的是给none的东西赋值
+    global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _rootlens_evaluator, _skill_manager, _diagnosis_pipeline
+    global _history_repository, _history_enabled, _history_api_enabled, _history_api_token
 
     print(BANNER, flush=True)
 
@@ -230,6 +261,25 @@ async def lifespan(app: FastAPI):
         provider=urlparse(cfg.get("base_url", "")).hostname or "anthropic",
     )
 
+    _history_enabled = _bool_env("ROOTLENS_HISTORY_ENABLED", "true")
+    _history_api_enabled = _bool_env("ROOTLENS_HISTORY_API_ENABLED", "false")
+    _history_api_token = os.getenv("ROOTLENS_HISTORY_API_TOKEN", "").strip()
+    if _history_api_enabled and len(_history_api_token) < 32:
+        raise RuntimeError("ROOTLENS_HISTORY_API_TOKEN must contain at least 32 characters")
+    _history_repository = None
+    if _history_enabled or _history_api_enabled:
+        repository = None
+        try:
+            repository = DiagnosisRepository(os.getenv(
+                "ROOTLENS_HISTORY_DATABASE_URL",
+                "sqlite:///./data/history/diagnoses.sqlite3"))
+            await asyncio.to_thread(repository.initialize)
+            _history_repository = repository
+        except Exception as ex:
+            logger.error("诊断历史初始化失败: %s", type(ex).__name__)
+            if repository is not None:
+                await asyncio.to_thread(repository.close)
+
     # 性能监控（可选启动 Prometheus）
     prom_port = int(os.getenv("PROMETHEUS_PORT", "0")) or None
     _monitor = PerformanceMonitor(
@@ -257,6 +307,8 @@ async def lifespan(app: FastAPI):
     await _monitor.stop()
     if _memory is not None:
         await _memory.close()
+    if _history_repository is not None:
+        await asyncio.to_thread(_history_repository.close)
     logger.info("EchoMind 已关闭")
 
 
@@ -324,6 +376,8 @@ class ChatResponse(BaseModel):
     clarification_required: bool = False
     diagnosis: Optional[IncidentDiagnosis] = None
     diagnosis_status: DiagnosisBuildStatus = DiagnosisBuildStatus.NOT_RUN
+    run_id: Optional[str] = None
+    persistence_status: Literal["saved", "failed", "disabled"] = "disabled"
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
@@ -397,6 +451,23 @@ async def chat(req: ChatRequest):#我要把用户 POST 过来的 JSON 请求体�
     if _memory.enable_user_profile:
         asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
 
+    run_id = None
+    persistence_status = "disabled"
+    if _history_enabled:
+        persistence_status = "failed"
+        try:
+            if _history_repository is None:
+                raise RuntimeError("history repository unavailable")
+            run = build_diagnosis_run(
+                diagnosis=diagnosis, message=req.message,
+                conversation_id=conv_id, environment=req.environment,
+            )
+            _assert_history_safe(run)
+            await asyncio.to_thread(_history_repository.save_run, run)
+            run_id, persistence_status = run.run_id, "saved"
+        except Exception as ex:
+            logger.error("诊断历史保存失败: %s", type(ex).__name__)
+
     return ChatResponse(
         conv_id=conv_id,
         response=result.response,
@@ -426,7 +497,82 @@ async def chat(req: ChatRequest):#我要把用户 POST 过来的 JSON 请求体�
         clarification_required=outcome.clarification_required,
         diagnosis=outcome.diagnosis_build_result.diagnosis,
         diagnosis_status=outcome.diagnosis_build_result.status,
+        run_id=run_id,
+        persistence_status=persistence_status,
     )
+
+
+def _require_history_access(
+        history_token: Optional[str] = Header(default=None, alias="X-RootLens-History-Token")):
+    if not _history_api_enabled:
+        raise HTTPException(404, "历史接口未启用")
+    if not _history_api_token:
+        raise HTTPException(503, "历史接口未配置")
+    if not history_token or not secrets.compare_digest(history_token, _history_api_token):
+        raise HTTPException(401, "历史接口未授权")
+
+
+def _require_history_repository() -> DiagnosisRepository:
+    if _history_repository is None:
+        raise HTTPException(503, "诊断历史暂不可用")
+    return _history_repository
+
+
+@app.get("/diagnoses", response_model=HistoryPage, tags=["Diagnosis History"],
+         dependencies=[Depends(_require_history_access)])
+async def list_diagnoses(
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        service_name: Optional[str] = None,
+        diagnosis_status: Optional[DiagnosisBuildStatus] = None,
+        degraded: Optional[bool] = None):
+    repository = _require_history_repository()
+    try:
+        runs = await asyncio.to_thread(
+            repository.list_runs, limit=limit, offset=offset,
+            service_name=service_name,
+            diagnosis_status=diagnosis_status.value if diagnosis_status else None,
+            degraded=degraded,
+        )
+    except UnsupportedSchemaVersion:
+        raise HTTPException(409, "诊断历史版本不受支持") from None
+    except Exception as ex:
+        logger.error("诊断历史列表查询失败: %s", type(ex).__name__)
+        raise HTTPException(503, "诊断历史暂不可用") from None
+    return HistoryPage(items=[HistorySummary.from_run(run) for run in runs],
+                       limit=limit, offset=offset)
+
+
+@app.get("/diagnoses/{run_id}", response_model=HistoryDetail,
+         tags=["Diagnosis History"], dependencies=[Depends(_require_history_access)])
+async def get_diagnosis(run_id: str):
+    repository = _require_history_repository()
+    try:
+        run = await asyncio.to_thread(repository.get_run, run_id)
+    except UnsupportedSchemaVersion:
+        raise HTTPException(409, "诊断历史版本不受支持") from None
+    except Exception as ex:
+        logger.error("诊断历史详情查询失败: %s", type(ex).__name__)
+        raise HTTPException(503, "诊断历史暂不可用") from None
+    if run is None:
+        raise HTTPException(404, "诊断记录不存在")
+    return HistoryDetail.from_run(run)
+
+
+@app.get("/diagnoses/{run_id}/trace", response_model=DiagnosisTrace,
+         tags=["Diagnosis History"], dependencies=[Depends(_require_history_access)])
+async def get_diagnosis_trace(run_id: str):
+    repository = _require_history_repository()
+    try:
+        run = await asyncio.to_thread(repository.get_run, run_id)
+    except UnsupportedSchemaVersion:
+        raise HTTPException(409, "诊断历史版本不受支持") from None
+    except Exception as ex:
+        logger.error("诊断历史 Trace 查询失败: %s", type(ex).__name__)
+        raise HTTPException(503, "诊断历史暂不可用") from None
+    if run is None or run.trace is None:
+        raise HTTPException(404, "诊断 Trace 不存在")
+    return run.trace
 
 
 async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) -> tuple[str, bool]:
