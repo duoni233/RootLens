@@ -1,5 +1,6 @@
 """Stage 6B API integration without paid models or the runtime SQLite file."""
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -7,6 +8,7 @@ import pytest
 from sqlalchemy import text
 
 from core.incident_diagnosis import DiagnosisBuildStatus
+from core.history_explanation import HistoryExplainer, archived_context
 from evaluation.rootlens_baseline import BaselineStore
 from evaluation.rootlens_cases import load_rootlens_cases
 from evaluation.rootlens_evaluator import RootLensEvaluator
@@ -75,6 +77,70 @@ def test_chat_saves_run_and_history_exposes_separate_shapes(runtime):
     assert trace.json()["trace_id"] == detail.json()["trace_id"]
     assert trace.json()["request_id"] == detail.json()["request_id"]
     assert trace.json()["steps"]
+
+
+def test_history_explanation_uses_only_saved_diagnosis(runtime, monkeypatch):
+    main, pipeline, orchestrator, repository, _ = runtime
+    run_id = chat(main).json()["run_id"]
+    client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(
+        return_value=SimpleNamespace(content=[{"type": "text", "text": "事实有 E-1；发布根因未证实。"}]))))
+    monkeypatch.setattr(main, "_history_explainer", HistoryExplainer(client, "offline"))
+    pipeline.tools.call = AsyncMock(side_effect=AssertionError("tools must not run"))
+    orchestrator.recognize_intent = AsyncMock(side_effect=AssertionError("intent must not run"))
+    result = request(main.app, "POST", f"/diagnoses/{run_id}/explain",
+                     {"question": "发布是否就是根因？"}, HEADERS)
+    assert result.status_code == 200
+    assert result.json()["basis"] == "saved_diagnosis"
+    assert "未证实" in result.json()["answer"]
+    assert len(repository.list_runs()) == 1
+    prompt = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "confirmed_findings" in prompt and "hypotheses" in prompt
+    assert "original_message" not in prompt and "trace" not in prompt
+    assert "response_markdown" not in prompt
+    assert "system" in client.messages.create.call_args.kwargs
+
+
+def test_clarification_history_explains_limit_without_model(runtime, monkeypatch):
+    main, _, orchestrator, repository, _ = runtime
+    orchestrator.recognize_intent = AsyncMock(return_value=intent(
+        entities={"start_time": ["10:05"]}))
+    run_id = chat(main, "10:05 出现 5xx").json()["run_id"]
+    client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock()))
+    monkeypatch.setattr(main, "_history_explainer", HistoryExplainer(client, "offline"))
+    result = request(main.app, "POST", f"/diagnoses/{run_id}/explain",
+                     {"question": "有哪些证据？"}, HEADERS)
+    assert result.status_code == 200
+    assert result.json()["basis"] == "insufficient_record"
+    assert "没有形成现场证据" in result.json()["answer"]
+    client.messages.create.assert_not_called()
+    assert len(repository.list_runs()) == 1
+
+
+def test_explanation_auth_validation_and_failure_are_bounded(runtime, monkeypatch):
+    main, _, _, repository, _ = runtime
+    run_id = chat(main).json()["run_id"]
+    client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(
+        side_effect=RuntimeError("PRIVATE_PROVIDER_SECRET"))))
+    monkeypatch.setattr(main, "_history_explainer", HistoryExplainer(client, "offline"))
+    path = f"/diagnoses/{run_id}/explain"
+    assert request(main.app, "POST", path, {"question": "分析"}).status_code == 401
+    assert request(main.app, "POST", path, {"question": "  "}, HEADERS).status_code == 422
+    assert request(main.app, "POST", path, {"question": "x" * 1001}, HEADERS).status_code == 422
+    assert request(main.app, "POST", "/diagnoses/absent/explain",
+                   {"question": "分析"}, HEADERS).status_code == 404
+    failure = request(main.app, "POST", path, {"question": "分析"}, HEADERS)
+    assert failure.status_code == 503
+    assert "PRIVATE_PROVIDER_SECRET" not in failure.text
+    assert len(repository.list_runs()) == 1
+
+
+def test_archived_context_excludes_unvalidated_text(runtime):
+    main, _, _, repository, _ = runtime
+    run_id = chat(main).json()["run_id"]
+    context = archived_context(repository.get_run(run_id))
+    assert context["confirmed_findings"]
+    assert "original_message" not in context
+    assert "response_markdown" not in context
 
 
 @pytest.mark.parametrize("credential", [

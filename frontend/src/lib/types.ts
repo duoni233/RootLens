@@ -114,6 +114,12 @@ export interface HistoryDetail extends HistorySummary {
   knowledge_refs: KnowledgeRef[];
 }
 
+export interface HistoryExplanation {
+  run_id: string;
+  answer: string;
+  basis: "saved_diagnosis" | "insufficient_record";
+}
+
 export interface TraceStep {
   step_id: string;
   step_type: string;

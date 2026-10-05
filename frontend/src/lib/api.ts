@@ -3,6 +3,7 @@ import type {
   ChatResponse,
   DiagnosisTrace,
   HistoryDetail,
+  HistoryExplanation,
   HistoryFilters,
   HistoryPage,
 } from "./types";
@@ -77,6 +78,12 @@ export const api = {
     request<HistoryDetail>(
       `/diagnoses/${encodeURIComponent(runId)}`,
       {},
+      token,
+    ),
+  explain: (runId: string, question: string, token: string) =>
+    request<HistoryExplanation>(
+      `/diagnoses/${encodeURIComponent(runId)}/explain`,
+      { method: "POST", body: JSON.stringify({ question }) },
       token,
     ),
   trace: (runId: string, token: string) =>

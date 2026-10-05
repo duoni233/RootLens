@@ -90,6 +90,7 @@ _history_repository = None
 _history_enabled = False
 _history_api_enabled = False
 _history_api_token = ""
+_history_explainer = None
 
 
 def _bool_env(name: str, default: str) -> bool:
@@ -132,6 +133,7 @@ def _anthropic_cfg() -> Dict[str, Any]:
 async def lifespan(app: FastAPI):
     global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _rootlens_evaluator, _skill_manager, _diagnosis_pipeline
     global _history_repository, _history_enabled, _history_api_enabled, _history_api_token
+    global _history_explainer
 
     print(BANNER, flush=True)
 
@@ -177,6 +179,8 @@ async def lifespan(app: FastAPI):
         skill_manager=_skill_manager,
         #为什么要传 skill_manager？因为 Agent 生成回复时需要把对应规则注入 prompt。
     )
+    from core.history_explanation import HistoryExplainer
+    _history_explainer = HistoryExplainer(_orchestrator._intent_recognizer.client, cfg["model"])
 
     # 记忆管理器（Redis 工作记忆 + ChromaDB 情景记忆/用户画像），记忆需要LLM是因为这个过程压缩1记忆什么的也需要LLM
     _memory = MemoryManager(
@@ -380,6 +384,16 @@ class ChatResponse(BaseModel):
     persistence_status: Literal["saved", "failed", "disabled"] = "disabled"
 
 
+class HistoryExplainRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+
+
+class HistoryExplainResponse(BaseModel):
+    run_id: str
+    answer: str
+    basis: Literal["saved_diagnosis", "insufficient_record"]
+
+
 # ── 路由 ──────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
@@ -561,6 +575,32 @@ async def get_diagnosis(run_id: str):
     if run is None:
         raise HTTPException(404, "诊断记录不存在")
     return HistoryDetail.from_run(run)
+
+
+@app.post("/diagnoses/{run_id}/explain", response_model=HistoryExplainResponse,
+          tags=["Diagnosis History"], dependencies=[Depends(_require_history_access)])
+async def explain_diagnosis(run_id: str, body: HistoryExplainRequest):
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(422, "问题不能为空")
+    repository = _require_history_repository()
+    try:
+        run = await asyncio.to_thread(repository.get_run, run_id)
+    except UnsupportedSchemaVersion:
+        raise HTTPException(409, "诊断历史版本不受支持") from None
+    except Exception as ex:
+        logger.error("诊断历史解读读取失败: %s", type(ex).__name__)
+        raise HTTPException(503, "诊断历史暂不可用") from None
+    if run is None:
+        raise HTTPException(404, "诊断记录不存在")
+    if _history_explainer is None:
+        raise HTTPException(503, "历史解读暂不可用")
+    try:
+        answer, basis = await _history_explainer.explain(run, question)
+    except Exception as ex:
+        logger.error("诊断历史解读失败: %s", type(ex).__name__)
+        raise HTTPException(503, "历史解读暂不可用，请稍后重试") from None
+    return HistoryExplainResponse(run_id=run_id, answer=answer, basis=basis)
 
 
 @app.get("/diagnoses/{run_id}/trace", response_model=DiagnosisTrace,

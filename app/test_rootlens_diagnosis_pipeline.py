@@ -172,6 +172,28 @@ def test_conflicting_explicit_and_message_time_requires_clarification(setup_pipe
     assert not requests and not queries
 
 
+def test_explicit_event_time_disambiguates_incident_and_deployment_times():
+    entities = {"service_name": ["payment-service"],
+                "start_time": ["10:05", "10:00"]}
+    selected = datetime.fromisoformat("2026-09-01T10:05:00+08:00")
+    query, question = build_query_context(
+        entities=entities, environment="demo", anchor_time=selected,
+        message="payment-service 10:05 出现 5xx，10:00 发布",
+    )
+    assert question is None and query.anchor_time == selected
+    missing, question = build_query_context(
+        entities=entities, environment="demo",
+        message="payment-service 10:05 出现 5xx，10:00 发布",
+    )
+    assert missing is None and "多个故障时间" in question
+    wrong, question = build_query_context(
+        entities=entities, environment="demo",
+        anchor_time=datetime.fromisoformat("2026-09-01T11:05:00+08:00"),
+        message="payment-service 10:05 出现 5xx，10:00 发布",
+    )
+    assert wrong is None and "不一致" in question
+
+
 def test_chinese_date_resolves_without_demo_date_guess():
     query, error = build_query_context(
         entities={"service_name": ["payment-service"], "start_time": ["10:05"],

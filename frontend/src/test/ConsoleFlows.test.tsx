@@ -304,13 +304,21 @@ describe("console flows", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("starts a new diagnosis from history without reusing an expired conversation", async () => {
+  it("explains an archived diagnosis without starting a new runtime diagnosis", async () => {
     sessionStorage.setItem("rootlens-history-token", "token");
     const fetchMock = vi
       .fn()
       .mockImplementation((url: string) =>
         Promise.resolve(
-          json(url.startsWith("/diagnoses/") ? detail : chatResponse),
+          json(
+            url.endsWith("/explain")
+              ? {
+                  run_id: "run-1",
+                  answer: "发布只是待验证假设。",
+                  basis: "saved_diagnosis",
+                }
+              : detail,
+          ),
         ),
       );
     vi.stubGlobal("fetch", fetchMock);
@@ -318,67 +326,121 @@ describe("console flows", () => {
     await waitFor(() =>
       expect(screen.getByRole("region", { name: "历史上下文" })).toBeVisible(),
     );
-    expect(screen.getByText(/不会恢复旧会话/)).toBeVisible();
-    fireEvent.change(screen.getByLabelText("新的追问"), {
-      target: { value: "这条诊断需要先做什么？" },
+    expect(screen.getByText(/解读只使用这条已保存记录/)).toBeVisible();
+    expect(screen.getByText(/结构化诊断和你的问题发送给当前配置的模型/)).toBeVisible();
+    fireEvent.change(screen.getByLabelText("关于这条记录的问题"), {
+      target: { value: "发布是不是根因？" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /解读记录/ }));
+    await waitFor(() =>
+      expect(screen.getByText("发布只是待验证假设。")).toBeVisible(),
+    );
+    const body = JSON.parse(
+      String((fetchMock.mock.calls[1][1] as RequestInit).body),
+    );
+    expect(body.question).toBe("发布是不是根因？");
+    expect(fetchMock.mock.calls[1][0]).toBe("/diagnoses/run-1/explain");
+    expect(
+      new Headers((fetchMock.mock.calls[1][1] as RequestInit).headers).get(
+        "X-RootLens-History-Token",
+      ),
+    ).toBe("token");
+    expect(fetchMock.mock.calls.every(([url]) => url !== "/chat")).toBe(true);
+  });
+
+  it("re-diagnoses from history without copying old replies or conversation IDs", async () => {
+    sessionStorage.setItem("rootlens-history-token", "token");
+    const saved = {
+      ...detail,
+      original_message:
+        "payment-service 从 10:05 开始 5xx，v2.3.7 于 10:00 发布",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(saved))
+      .mockResolvedValueOnce(json(chatResponse));
+    vi.stubGlobal("fetch", fetchMock);
+    show(<NewDiagnosis />, "/?from=run-1");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "重新诊断" })).toBeVisible(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "重新诊断" }));
+    expect(screen.getByLabelText("事件时间（北京时间）")).toHaveValue(
+      "2026-09-01T10:05",
+    );
+    fireEvent.change(screen.getByLabelText("故障描述"), {
+      target: { value: "5xx 仍在出现，请重新取证" },
     });
     fireEvent.click(screen.getByRole("button", { name: /开始诊断/ }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /继续诊断/ })).toBeVisible(),
+    );
     const first = JSON.parse(
       String((fetchMock.mock.calls[1][1] as RequestInit).body),
     );
-    expect(first.message).toContain(detail.original_message);
-    expect(first.message).toContain(detail.diagnosis?.summary);
-    expect(first.message).toContain("这条诊断需要先做什么？");
+    expect(first.message).toBe("payment-service：5xx 仍在出现，请重新取证");
+    expect(first.message).not.toContain(saved.original_message);
+    expect(first.message).not.toContain(saved.diagnosis?.summary);
+    expect(first.anchor_time).toBe("2026-09-01T10:05:00+08:00");
     expect(first.conv_id).toBeUndefined();
-    expect(first.environment).toBe("demo");
     expect(
       new Headers((fetchMock.mock.calls[1][1] as RequestInit).headers).has(
         "X-RootLens-History-Token",
       ),
     ).toBe(false);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /继续诊断/ })).toBeVisible(),
-    );
-    fireEvent.change(screen.getByLabelText("故障描述"), {
-      target: { value: "还有哪些证据缺口？" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /继续诊断/ }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    const second = JSON.parse(
-      String((fetchMock.mock.calls[2][1] as RequestInit).body),
-    );
-    expect(second.message).toBe("还有哪些证据缺口？");
-    expect(second.conv_id).toBe("conv-1");
   });
 
-  it("carries a historical clarification into its new follow-up", async () => {
+  it("keeps a manually changed event time and does not assume today's date", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(chatResponse)));
+    show(<NewDiagnosis />);
+    fireEvent.change(screen.getByLabelText("故障描述"), {
+      target: { value: "payment-service 从 10:05 开始 5xx" },
+    });
+    expect(screen.getByLabelText("事件时间（北京时间）")).toHaveValue(
+      "2026-09-01T10:05",
+    );
+    fireEvent.change(screen.getByLabelText("事件时间（北京时间）"), {
+      target: { value: "2026-09-01T10:10" },
+    });
+    fireEvent.change(screen.getByLabelText("故障描述"), {
+      target: { value: "payment-service 从 10:15 开始 5xx" },
+    });
+    expect(screen.getByLabelText("事件时间（北京时间）")).toHaveValue(
+      "2026-09-01T10:10",
+    );
+  });
+
+  it("does not nest a saved clarification into a new diagnosis", async () => {
     sessionStorage.setItem("rootlens-history-token", "token");
     const saved = {
       ...detail,
       original_message: "后台界面打不开",
       diagnosis: null,
+      service_name: null,
       clarification_required: true,
-      diagnosis_status: "not_run",
-    };
-    const clarification = {
-      ...chatResponse,
-      clarification_required: true,
-      diagnosis: null,
       diagnosis_status: "not_run",
     };
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(json(saved))
-      .mockResolvedValueOnce(json(clarification))
+      .mockResolvedValueOnce(
+        json({
+          ...chatResponse,
+          clarification_required: true,
+          diagnosis: null,
+          diagnosis_status: "not_run",
+        }),
+      )
       .mockResolvedValueOnce(json(chatResponse));
     vi.stubGlobal("fetch", fetchMock);
     show(<NewDiagnosis />, "/?from=run-1");
     await waitFor(() =>
-      expect(screen.getByLabelText("新的追问")).toBeVisible(),
+      expect(screen.getByRole("button", { name: "重新诊断" })).toBeVisible(),
     );
-    fireEvent.change(screen.getByLabelText("新的追问"), {
-      target: { value: "补充服务信息" },
+    expect(screen.getByText(/只会说明档案的缺口，不调用模型/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "重新诊断" }));
+    fireEvent.change(screen.getByLabelText("故障描述"), {
+      target: { value: "后台界面打不开" },
     });
     fireEvent.click(screen.getByRole("button", { name: /开始诊断/ }));
     await waitFor(() =>
@@ -392,10 +454,10 @@ describe("console flows", () => {
     const followUp = JSON.parse(
       String((fetchMock.mock.calls[2][1] as RequestInit).body),
     );
-    expect(followUp.message).toContain("后台界面打不开");
-    expect(followUp.message).toContain("补充服务信息");
-    expect(followUp.message).toContain("payment-service 10:05 出现 500");
-    expect(followUp.conv_id).toBe("conv-1");
+    expect(followUp.message).toBe(
+      "后台界面打不开\n补充信息：payment-service 10:05 出现 500",
+    );
+    expect(followUp.message.match(/后台界面打不开/g)).toHaveLength(1);
   });
 
   it("maps backend and network failures without exposing response bodies", async () => {

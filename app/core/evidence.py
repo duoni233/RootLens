@@ -248,16 +248,14 @@ def build_query_context(*, entities: dict, environment: Optional[str] = None,
     assumptions = [] if environment or env_in_text else ["未指定环境，使用显式模拟环境 demo"]
     times = list(dict.fromkeys(entities.get("start_time") or []))
     dates = list(dict.fromkeys(entities.get("date") or []))
-    if len(times) > 1 or len(dates) > 1:
-        return None, "出现多个故障时间，请确认本次需要查询的时间。"
     try:
-        event_time = time(*(int(part) for part in times[0].split(":"))) if times else None
-        day = None
-        if dates:
-            match = re.fullmatch(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", dates[0])
+        event_times = [time(*(int(part) for part in value.split(":"))) for value in times]
+        parsed_dates = []
+        for value in dates:
+            match = re.fullmatch(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", value)
             if match is None:
                 raise ValueError("unsupported date")
-            day = date(*(int(part) for part in match.groups()))
+            parsed_dates.append(date(*(int(part) for part in match.groups())))
     except ValueError:
         return None, "故障发生时间格式无效，请使用完整日期和 HH:MM。"
     if anchor_time is not None:
@@ -265,10 +263,14 @@ def build_query_context(*, entities: dict, environment: Optional[str] = None,
             return None, "请提供带时区的完整发生时间。"
         anchor = anchor_time
         local = anchor.astimezone(ZoneInfo(timezone))
-        if (event_time and local.time().replace(tzinfo=None).replace(second=0, microsecond=0) != event_time
-                or day and local.date() != day):
+        if (event_times and local.time().replace(tzinfo=None).replace(second=0, microsecond=0)
+                not in event_times or parsed_dates and local.date() not in parsed_dates):
             return None, "请求时间与消息中的故障时间不一致，请确认本次发生时间。"
     else:
+        if len(event_times) > 1 or len(parsed_dates) > 1:
+            return None, "出现多个故障时间，请确认本次需要查询的时间。"
+        event_time = event_times[0] if event_times else None
+        day = parsed_dates[0] if parsed_dates else None
         if event_time is None:
             return None, "请提供明确的故障发生时间，例如 2026-09-01 10:05。"
         if day is None and env == "demo":
