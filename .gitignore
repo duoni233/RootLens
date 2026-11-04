@@ -16,3 +16,18 @@ app/.idea/
 app/.venv/
 app/data/chroma/
 app/logs/
+
+# Local runtime artifacts and private working notes (not project deliverables).
+node_modules/
+*.sqlite
+*.sqlite3
+*.db
+*.pem
+*.key
+*.p12
+*.pfx
+*.bak
+/data/
+/chatgpt聊天结果.md
+/kun.doc
+/~$kun.doc
