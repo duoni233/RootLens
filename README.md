@@ -50,6 +50,5 @@ docker compose ps
 - Stage 7 最新记录为前端 22 项、隔离环境后端 322 项测试通过。一次真实模型的历史解读 API 冒烟测试能区分事实/假设，并未把发布时间相邻断言为根因。浏览器双模式追问仍待 Owner 最终确认，不能提前宣称 Stage 7 正式关闭。
 - 现场工具只查版本化 JSON 模拟数据；RAG 仍有额外命中；Judge 尚未经过大规模人工校准；未做生产负载、故障恢复或租户隔离研究。历史只保存部分来源引用，不是完整不可变审计日志。
 
-RootLens **不是从零写出的 Agent 框架**：原有 EchoMind 提供编排、ToolManager 等运行时基础；RootLens 重点增加故障业务模型、证据工具与契约、知识/记忆隔离、证据增强路由、结构化诊断、评测对齐、Trace/故障测试、历史与控制台。公开再分发继承源码前，需确认原项目的许可/授权。`app/README.md` 是继承的 EchoMind 使用说明，不代表当前 RootLens 部署方式。
 
 继续阅读：[先看中文架构图与请求流程](docs/33-rootlens-architecture-walkthrough-cn.md)、[中文项目口述与技术取舍](docs/31-project-interview-cn.md)、[基于作者面经改写的 RootLens 问答](docs/32-rootlens-interview-qna-cn.md)、[五分钟演示与待验项](docs/30-stage7-closeout-and-demo.md)、[逐阶段验收](docs/03-progress.md)。
